@@ -359,3 +359,119 @@ Template at `server/.env.example`. The config object in `server/src/config.ts` i
 - **Repo**: https://github.com/nkpardon8-prog/Jarvis3
 - **Branch**: main
 - **Desktop symlink**: `~/Desktop/jarvis` → `~/jarvis/`
+
+## Git Collaboration Rules (MANDATORY)
+
+This codebase has **two contributors** working simultaneously from separate machines with their own Claude Code agents. Every agent session MUST follow these rules to prevent overwrites, conflicts, and lost work.
+
+### Before Every Action
+
+**Pull before you do anything.** Every time you start a task, write code, or make a commit:
+
+```bash
+git pull origin main --rebase
+```
+
+If rebase conflicts arise, stop and ask the user — do NOT auto-resolve or force through.
+
+### Branching
+
+- **Never commit directly to `main`** for feature work or multi-file changes.
+- Create a feature branch for any non-trivial work:
+  ```bash
+  git checkout -b <initials>/<short-description>
+  ```
+  Example: `oz/add-calendar-filters` or `np/fix-chat-scroll`
+- Single-line fixes or typo corrections may go directly to `main` only if the user explicitly says so.
+
+### Committing
+
+- Always `git pull origin main --rebase` before committing.
+- Stage specific files by name — **never use `git add .` or `git add -A`**. This prevents accidentally committing `.env`, `.db`, or other local files.
+- Write clear commit messages that describe the **why**, not just the what.
+- Never amend commits that have already been pushed.
+
+### Pushing
+
+- **NEVER force push.** No `--force`, no `--force-with-lease`, no exceptions.
+- Always push with a simple `git push origin <branch>`.
+- If push is rejected, pull first and resolve:
+  ```bash
+  git pull origin <branch> --rebase
+  git push origin <branch>
+  ```
+  If rebase conflicts appear, stop and involve the user.
+
+### Merging
+
+- Feature branches merge into `main` via **pull request only** (`gh pr create`).
+- Before creating a PR, sync with main:
+  ```bash
+  git fetch origin main
+  git rebase origin/main
+  ```
+- After PR is merged, delete the feature branch:
+  ```bash
+  git branch -d <branch>
+  git push origin --delete <branch>
+  ```
+
+### What NOT to Do
+
+- **NEVER** `git push --force` or `git push --force-with-lease`
+- **NEVER** `git reset --hard` on shared branches
+- **NEVER** `git checkout .` or `git restore .` without user confirmation
+- **NEVER** `git clean -f`
+- **NEVER** `git rebase` on commits already pushed to `main`
+- **NEVER** delete `main` or any branch you didn't create
+- **NEVER** skip pre-commit hooks (`--no-verify`)
+
+### Conflict Resolution
+
+If you encounter a merge conflict:
+1. **Stop.** Do not auto-resolve.
+2. Show the user the conflicted files and both sides of the diff.
+3. Let the user decide which changes to keep.
+4. Only after user approval, mark resolved and continue.
+
+### Session Start Checklist
+
+Every new Claude Code session should begin with:
+1. `git fetch origin` — see what's changed remotely
+2. `git status` — check for local uncommitted work
+3. `git pull origin main --rebase` — sync up (if on main)
+4. If on a feature branch: `git pull origin <branch> --rebase` to sync that too
+
+This ensures neither contributor's agent starts working on stale code.
+
+## Change Tracking (MANDATORY)
+
+All changes are logged in **`CHANGES.md`** at the project root. This file is the shared context window for both contributors and their agents.
+
+### Rules
+
+1. **Read `CHANGES.md` at the start of every session** — before writing any code, read the recent entries to understand what's changed.
+2. **Append an entry after every commit.** No exceptions. The entry goes at the top of the log (below the header), so the most recent change is always first.
+3. **Entry format:**
+
+```markdown
+## YYYY-MM-DD — Short Description of Change
+
+**Author:** <name> (via Claude Code)
+**Commit:** <short hash + message>
+**Branch:** <branch name>
+
+**What changed:**
+- Bullet list of specific changes made
+
+**Why:**
+- Motivation / context for the change
+
+**Files touched:**
+- List of files added, modified, or deleted
+```
+
+4. **Be specific** — don't write "updated stuff." Name the functions, components, routes, or patterns that changed.
+5. **Include the why** — future agents and contributors need to understand intent, not just diffs.
+6. **Link to the commit** — include the short hash so anyone can `git show` it for full detail.
+7. **This file is committed with every change** — it's part of the codebase, not separate. Include it in your staged files when committing.
