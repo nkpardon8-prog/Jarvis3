@@ -360,6 +360,18 @@ Template at `server/.env.example`. The config object in `server/src/config.ts` i
 - **Branch**: main
 - **Desktop symlink**: `~/Desktop/jarvis` → `~/jarvis/`
 
+## Build for Production (MANDATORY)
+
+All code must be written for **production use by multiple users**, not just local development on one machine.
+
+- **No hardcoded values** — no hardcoded URLs, ports, IPs, paths, usernames, or machine-specific assumptions. Everything configurable goes through env vars or gateway config.
+- **No localhost assumptions** — never assume the app runs on `localhost`. Use relative URLs on the client, and respect `process.env` for host/port on the server.
+- **Multi-user from day one** — every feature must work for multiple concurrent users. Auth, data isolation (userId scoping), and session management are not optional.
+- **Scalable patterns** — write code that handles N users, not just one. Database queries should be scoped and indexed. API endpoints should paginate where appropriate. Don't load unbounded data into memory.
+- **Environment-agnostic** — the app should run on any machine with the correct env vars set. No assumptions about OS, file paths, home directories, or installed tools beyond what's in `package.json`.
+- **Error handling at boundaries** — validate user input, handle API failures gracefully, return meaningful error messages. Internal code can trust its own types.
+- **Security defaults** — httpOnly cookies, parameterized queries (Prisma handles this), no secrets in client bundles, no sensitive data in logs.
+
 ## Git Collaboration Rules (MANDATORY)
 
 This codebase has **two contributors** working simultaneously from separate machines with their own Claude Code agents. Every agent session MUST follow these rules to prevent overwrites, conflicts, and lost work.
