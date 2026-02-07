@@ -7,7 +7,7 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 ## 2026-02-07 — Git Collaboration Rules + Change Tracking
 
 **Author:** Omid (via Claude Code)
-**Commit:** (pending)
+**Commit:** 078765b — Add git collaboration rules and change tracking for 2-person workflow
 **Branch:** main
 
 **What changed:**
