@@ -1,0 +1,12 @@
+node_modules/
+.env
+.env.local
+.env.*.local
+*.db
+*.sqlite
+dist/
+.next/
+.DS_Store
+*.log
+.turbo/
+.claude/

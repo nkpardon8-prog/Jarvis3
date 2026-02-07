@@ -1,0 +1,113 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  username     String   @unique
+  passwordHash String
+  displayName  String?
+  role         String   @default("admin")
+  gatewayToken String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  todos               Todo[]
+  emailTags           EmailTag[]
+  emailSettings       EmailSettings?
+  crmSettings         CrmSettings?
+  oauthTokens         OAuthToken[]
+  notifications       Notification[]
+  onboardingProgress  OnboardingProgress?
+}
+
+model Todo {
+  id          String    @id @default(uuid())
+  userId      String
+  title       String
+  description String?
+  priority    String    @default("medium") // high, medium, low
+  dueDate     DateTime?
+  completed   Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model EmailTag {
+  id          String @id @default(uuid())
+  userId      String
+  name        String
+  color       String @default("#00d4ff")
+  description String?
+  criteria    String? // JSON string with classification rules
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, name])
+}
+
+model EmailSettings {
+  id             String  @id @default(uuid())
+  userId         String  @unique
+  autoTagEnabled Boolean @default(false)
+  autoDraftEnabled Boolean @default(false)
+  draftTone      String  @default("professional")
+  signature      String?
+  draftRules     String? // JSON string with draft rules
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model CrmSettings {
+  id            String  @id @default(uuid())
+  userId        String  @unique
+  spreadsheetId String?
+  apolloApiKey  String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model OAuthToken {
+  id           String   @id @default(uuid())
+  userId       String
+  provider     String   // google, microsoft
+  accessToken  String
+  refreshToken String?
+  expiresAt    DateTime?
+  scopes       String?  // comma-separated scopes
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  type      String   // info, warning, error, success
+  title     String
+  body      String?
+  read      Boolean  @default(false)
+  link      String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model OnboardingProgress {
+  id        String  @id @default(uuid())
+  userId    String  @unique
+  step      Int     @default(0)
+  completed Boolean @default(false)
+  data      String  @default("{}") // JSON blob for wizard state
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}

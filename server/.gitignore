@@ -1,0 +1,15 @@
+node_modules
+# Keep environment variables out of version control
+.env
+.env.local
+.env.*.local
+
+# Database files
+*.db
+*.sqlite
+
+# Build output
+dist/
+
+# Generated Prisma client
+/generated/prisma
