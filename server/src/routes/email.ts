@@ -326,7 +326,7 @@ async function fetchOutlookMessages(
     throw new Error(`Microsoft Graph API error: ${response.status} ${errText}`);
   }
 
-  const data = await response.json();
+  const data: any = await response.json();
 
   return (data.value || []).map((msg: any) => ({
     id: msg.id,

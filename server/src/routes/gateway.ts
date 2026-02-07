@@ -1,6 +1,4 @@
 import { Router, Response } from "express";
-import { readFileSync, writeFileSync, existsSync } from "fs";
-import { join } from "path";
 import { authMiddleware } from "../middleware/auth";
 import { AuthRequest } from "../types";
 import { config } from "../config";
@@ -43,6 +41,9 @@ router.get("/status", async (_req: AuthRequest, res: Response) => {
 });
 
 // ─── Configure gateway ──────────────────────────────────
+// Updates runtime config and reconnects.
+// The gateway URL + token are the one "local" config for this Jarvis instance
+// (they define WHERE to connect, which is inherently per-deployment).
 
 router.post("/configure", async (req: AuthRequest, res: Response) => {
   try {
@@ -52,48 +53,6 @@ router.post("/configure", async (req: AuthRequest, res: Response) => {
       res.status(400).json({ ok: false, error: "Provide url and/or token" });
       return;
     }
-
-    // Read existing server .env file
-    const envPath = join(__dirname, "../../.env");
-    let envContent = "";
-    if (existsSync(envPath)) {
-      envContent = readFileSync(envPath, "utf-8");
-    }
-
-    const updates: Record<string, string> = {};
-    if (url) updates["OPENCLAW_GATEWAY_URL"] = url.trim();
-    if (token) updates["OPENCLAW_AUTH_TOKEN"] = token.trim();
-
-    const lines = envContent.split("\n");
-    const found: Record<string, boolean> = {};
-
-    const updatedLines = lines.map((line) => {
-      const trimmed = line.trim();
-      for (const [key, value] of Object.entries(updates)) {
-        if (
-          trimmed.startsWith(key + "=") ||
-          trimmed.startsWith("export " + key + "=")
-        ) {
-          found[key] = true;
-          return `${key}=${value}`;
-        }
-      }
-      return line;
-    });
-
-    // Append any vars that weren't found
-    for (const [key, value] of Object.entries(updates)) {
-      if (!found[key]) {
-        updatedLines.push(`${key}=${value}`);
-      }
-    }
-
-    const finalContent =
-      updatedLines
-        .filter((l, i, arr) => !(i === arr.length - 1 && l.trim() === ""))
-        .join("\n") + "\n";
-
-    writeFileSync(envPath, finalContent, "utf-8");
 
     // Update runtime config
     if (url) {
@@ -117,7 +76,7 @@ router.post("/configure", async (req: AuthRequest, res: Response) => {
         },
       });
     } catch (err: any) {
-      // Config was saved even if reconnect fails
+      // Config was updated even if reconnect fails
       res.json({
         ok: true,
         data: {

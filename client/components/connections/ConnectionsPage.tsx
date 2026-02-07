@@ -11,6 +11,9 @@ import { ChannelCard } from "./ChannelCard";
 import { ServiceCard } from "./ServiceCard";
 import { OAuthAccountCard } from "./OAuthAccountCard";
 import { GatewayCard } from "./GatewayCard";
+import { IntegrationBuilder } from "./IntegrationBuilder";
+import { IntegrationCard } from "./IntegrationCard";
+import { ClawHubSuggestions } from "./ClawHubSuggestions";
 import {
   Brain,
   Radio,
@@ -29,6 +32,7 @@ import {
   FileText,
   HardDrive,
   Wifi,
+  Plug,
 } from "lucide-react";
 
 // Top 4 models per provider from the actual OpenClaw models.list
@@ -168,6 +172,7 @@ export function ConnectionsPage() {
   const queryClient = useQueryClient();
   const searchParams = useSearchParams();
   const [oauthMessage, setOauthMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [suggestionsSlug, setSuggestionsSlug] = useState<string | null>(null);
 
   // Handle OAuth callback query params
   useEffect(() => {
@@ -214,6 +219,15 @@ export function ConnectionsPage() {
       const res = await api.get<any>("/oauth/status");
       if (!res.ok) throw new Error(res.error || "Failed to load OAuth status");
       return res.data;
+    },
+  });
+
+  const { data: integrationsData, refetch: refetchIntegrations } = useQuery({
+    queryKey: ["integrations"],
+    queryFn: async () => {
+      const res = await api.get<any>("/integrations");
+      if (!res.ok) return [];
+      return res.data?.integrations || [];
     },
   });
 
@@ -431,6 +445,48 @@ export function ConnectionsPage() {
             />
           ))}
         </div>
+      </section>
+
+      {/* Custom API Integrations */}
+      <section>
+        <div className="flex items-center gap-2 mb-2">
+          <Plug size={18} className="text-hud-accent" />
+          <h3 className="text-sm font-semibold text-hud-text-secondary uppercase tracking-wider">
+            Custom API Integrations
+          </h3>
+        </div>
+        <p className="text-xs text-hud-text-muted mb-4">
+          Register any external API and automatically scaffold it into an OpenClaw skill.
+        </p>
+
+        {/* Existing integration cards */}
+        {integrationsData && integrationsData.length > 0 && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            {integrationsData.map((integration: any) => (
+              <IntegrationCard
+                key={integration.slug}
+                integration={integration}
+                onDelete={() => refetchIntegrations()}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* Builder form */}
+        <IntegrationBuilder
+          onCreated={(slug) => {
+            refetchIntegrations();
+            setSuggestionsSlug(slug);
+          }}
+        />
+
+        {/* ClawHub suggestions after creation */}
+        {suggestionsSlug && (
+          <ClawHubSuggestions
+            slug={suggestionsSlug}
+            onDismiss={() => setSuggestionsSlug(null)}
+          />
+        )}
       </section>
     </div>
   );

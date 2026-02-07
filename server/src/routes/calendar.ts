@@ -261,7 +261,7 @@ async function fetchMicrosoftCalendarEvents(
     throw new Error(`Microsoft Graph API error: ${response.status} ${errText}`);
   }
 
-  const data = await response.json();
+  const data: any = await response.json();
 
   return (data.value || []).map((event: any) => {
     const startStr = event.start?.dateTime

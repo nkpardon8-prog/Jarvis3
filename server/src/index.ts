@@ -17,6 +17,7 @@ import emailRoutes from "./routes/email";
 import crmRoutes from "./routes/crm";
 import oauthRoutes from "./routes/oauth";
 import gatewayRoutes from "./routes/gateway";
+import integrationsRoutes from "./routes/integrations";
 import { gateway } from "./gateway/connection";
 import { setupSocketIO } from "./socket";
 
@@ -44,6 +45,7 @@ app.use("/api/email", emailRoutes);
 app.use("/api/crm", crmRoutes);
 app.use("/api/oauth", oauthRoutes);
 app.use("/api/gateway", gatewayRoutes);
+app.use("/api/integrations", integrationsRoutes);
 
 // Error handler (must be last)
 app.use(errorHandler);
@@ -68,8 +70,25 @@ httpServer.listen(config.port, async () => {
     console.log("[Jarvis] Gateway disconnected — will auto-reconnect");
   });
 
-  gateway.on("connected", () => {
+  gateway.on("connected", async () => {
     console.log("[Jarvis] Gateway reconnected");
+    // Hydrate OAuth credentials from gateway config into runtime
+    try {
+      const result = (await gateway.send("config.get", {})) as any;
+      const oauthCfg = result?.config?.jarvis?.oauth;
+      if (oauthCfg?.google?.clientId) {
+        config.googleClientId = oauthCfg.google.clientId;
+        config.googleClientSecret = oauthCfg.google.clientSecret;
+        console.log("[Jarvis] Loaded Google OAuth credentials from gateway config");
+      }
+      if (oauthCfg?.microsoft?.clientId) {
+        config.microsoftClientId = oauthCfg.microsoft.clientId;
+        config.microsoftClientSecret = oauthCfg.microsoft.clientSecret;
+        console.log("[Jarvis] Loaded Microsoft OAuth credentials from gateway config");
+      }
+    } catch {
+      // Non-critical — OAuth may not be configured
+    }
   });
 });
 

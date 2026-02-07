@@ -1,6 +1,4 @@
 import { Router, Request, Response } from "express";
-import { readFileSync, writeFileSync, existsSync } from "fs";
-import { join } from "path";
 import { authMiddleware } from "../middleware/auth";
 import { AuthRequest } from "../types";
 import {
@@ -12,8 +10,33 @@ import {
   revokeToken,
 } from "../services/oauth.service";
 import { config } from "../config";
+import { gateway } from "../gateway/connection";
 
 const router = Router();
+
+// ─── Helpers ────────────────────────────────────────────
+
+/** Patch gateway config with retry on hash conflict */
+async function patchConfig(
+  updateFn: (cfg: any) => any,
+  maxRetries = 2
+): Promise<any> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const current = (await gateway.send("config.get", {})) as any;
+    const hash = current?.hash;
+    if (!hash) throw new Error("Could not get config hash");
+
+    const merged = updateFn(current?.config || {});
+    try {
+      return await gateway.send("config.patch", {
+        raw: JSON.stringify(merged, null, 2),
+        baseHash: hash,
+      });
+    } catch (err: any) {
+      if (attempt === maxRetries) throw err;
+    }
+  }
+}
 
 // ─── Google OAuth ──────────────────────────────────────────
 
@@ -122,19 +145,19 @@ router.get("/status", authMiddleware, async (req: AuthRequest, res: Response) =>
 router.post("/disconnect/:provider", authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
     const { provider } = req.params;
-    if (!["google", "microsoft"].includes(provider)) {
+    if (!["google", "microsoft"].includes(provider as string)) {
       res.status(400).json({ ok: false, error: "Invalid provider" });
       return;
     }
 
-    await revokeToken(req.user!.userId, provider);
+    await revokeToken(req.user!.userId, provider as string);
     res.json({ ok: true, data: { disconnected: true } });
   } catch (err: any) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-/** Store OAuth client credentials in server .env and reload config at runtime */
+/** Store OAuth client credentials in gateway config and update runtime */
 router.post("/store-credentials", authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
     const { provider, clientId, clientSecret } = req.body;
@@ -148,72 +171,34 @@ router.post("/store-credentials", authMiddleware, async (req: AuthRequest, res: 
       return;
     }
 
-    // Map provider to env var names
-    const envVars: Record<string, { id: string; secret: string; configId: string; configSecret: string }> = {
+    // Map provider to config key names
+    const configMap: Record<string, { configId: string; configSecret: string }> = {
       google: {
-        id: "GOOGLE_CLIENT_ID",
-        secret: "GOOGLE_CLIENT_SECRET",
         configId: "googleClientId",
         configSecret: "googleClientSecret",
       },
       microsoft: {
-        id: "MICROSOFT_CLIENT_ID",
-        secret: "MICROSOFT_CLIENT_SECRET",
         configId: "microsoftClientId",
         configSecret: "microsoftClientSecret",
       },
     };
 
-    const vars = envVars[provider];
+    const vars = configMap[provider];
 
-    // Read existing server .env file
-    const envPath = join(__dirname, "../../.env");
-    let envContent = "";
-    if (existsSync(envPath)) {
-      envContent = readFileSync(envPath, "utf-8");
-    }
-
-    // Update or add each env var
-    const updates: Record<string, string> = {
-      [vars.id]: clientId.trim(),
-      [vars.secret]: clientSecret.trim(),
-    };
-
-    const lines = envContent.split("\n");
-    const found: Record<string, boolean> = {};
-
-    const updatedLines = lines.map((line) => {
-      const trimmed = line.trim();
-      for (const [key, value] of Object.entries(updates)) {
-        if (trimmed.startsWith(key + "=") || trimmed.startsWith("export " + key + "=")) {
-          found[key] = true;
-          return `${key}=${value}`;
-        }
-      }
-      return line;
+    // Store in gateway config so any Jarvis instance can read them
+    await patchConfig((cfg) => {
+      if (!cfg.jarvis) cfg.jarvis = {};
+      if (!cfg.jarvis.oauth) cfg.jarvis.oauth = {};
+      cfg.jarvis.oauth[provider] = {
+        clientId: clientId.trim(),
+        clientSecret: clientSecret.trim(),
+      };
+      return cfg;
     });
 
-    // Append any vars that weren't found
-    for (const [key, value] of Object.entries(updates)) {
-      if (!found[key]) {
-        updatedLines.push(`${key}=${value}`);
-      }
-    }
-
-    // Write back
-    const finalContent =
-      updatedLines
-        .filter((l, i, arr) => !(i === arr.length - 1 && l.trim() === ""))
-        .join("\n") + "\n";
-
-    writeFileSync(envPath, finalContent, "utf-8");
-
-    // Update runtime config so server doesn't need restart
+    // Update runtime config so this server instance picks it up immediately
     config[vars.configId] = clientId.trim();
     config[vars.configSecret] = clientSecret.trim();
-    // Also update process.env so googleapis picks it up
-    process.env[vars.id] = clientId.trim();
-    process.env[vars.secret] = clientSecret.trim();
 
     res.json({ ok: true, data: { saved: true } });
   } catch (err: any) {

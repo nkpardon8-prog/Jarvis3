@@ -197,7 +197,7 @@ export async function handleMicrosoftCallback(
       }),
     });
 
-    const tokenData = await tokenRes.json();
+    const tokenData: any = await tokenRes.json();
 
     if (!tokenData.access_token) {
       return {
@@ -257,7 +257,7 @@ async function refreshMicrosoftToken(tokenRecord: any): Promise<string | null> {
       }),
     });
 
-    const tokenData = await tokenRes.json();
+    const tokenData: any = await tokenRes.json();
     if (!tokenData.access_token) return null;
 
     const expiresAt = tokenData.expires_in
