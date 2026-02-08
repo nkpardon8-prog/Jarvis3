@@ -377,6 +377,74 @@ Recommended OAuth setup behavior:
 - In Google Cloud Console, each OAuth client must include the exact backend callback URL:
   - `<OAUTH_BASE_URL>/api/oauth/google/callback`
 
+## Setup Playbook (Local, EC2, Web)
+
+Use this section as the source of truth for onboarding and troubleshooting setup questions.
+
+### A) Localhost (Jarvis + OpenClaw on same machine)
+
+Prerequisite: use code that includes per-user OAuth (main after merge, or `oz/per-user-oauth` branch before merge).
+
+One-time setup after clone (replace `YOUR_OPENCLAW_TOKEN_HERE`):
+
+```bash
+cd jarvis3 && cp -n server/.env.example server/.env && npm --prefix server install && npm --prefix client install && node -e 'const fs=require("fs"),c=require("crypto");const p="server/.env";let s=fs.readFileSync(p,"utf8");const set=(k,v)=>{const r=new RegExp("^"+k+"=.*$","m");s=r.test(s)?s.replace(r,k+"="+v):s+"\\n"+k+"="+v;};set("JWT_SECRET",c.randomBytes(32).toString("hex"));set("OAUTH_CREDENTIALS_ENCRYPTION_KEY",c.randomBytes(32).toString("hex"));set("OAUTH_BASE_URL","http://localhost:3001");set("OPENCLAW_GATEWAY_URL","ws://127.0.0.1:4000");set("OPENCLAW_AUTH_TOKEN","YOUR_OPENCLAW_TOKEN_HERE");fs.writeFileSync(p,s);' && npm --prefix server run db:push
+```
+
+Run server + client in one terminal:
+
+```bash
+cd jarvis3 && (cd server && npm run dev) & SERVER_PID=$! && (cd client && npm run dev) & CLIENT_PID=$! && trap "kill $SERVER_PID $CLIENT_PID" INT TERM && wait
+```
+
+User OAuth flow (no terminal):
+
+1. Login to Jarvis.
+2. Open Connections.
+3. Paste Google Client ID + Client Secret (two fields).
+4. Consent once in browser.
+5. Gmail/Calendar/Docs/Drive should work for that account.
+
+Google OAuth client requirements for local:
+
+- Client type: **Web application**
+- Authorized redirect URI: `http://localhost:3001/api/oauth/google/callback`
+- Add test user email while app is in testing mode.
+- Enable Gmail API, Calendar API, Drive API, and Docs API.
+
+### B) Jarvis Local + OpenClaw on EC2
+
+Same code and same UI flow. Only gateway connectivity changes:
+
+- Set `OPENCLAW_GATEWAY_URL=ws://<EC2_HOST_OR_IP>:<PORT>`
+- Set `OPENCLAW_AUTH_TOKEN=<EC2_GATEWAY_TOKEN>`
+- Keep local OAuth callback as `OAUTH_BASE_URL=http://localhost:3001` for local Jarvis testing
+
+Everything else (OAuth credential entry, consent flow, token storage/refresh) is unchanged.
+
+### C) Hosted Website (Jarvis on web)
+
+No end-user terminal setup. Deploy once, then users only do UI onboarding.
+
+Server env requirements:
+
+- `OPENCLAW_GATEWAY_URL` and `OPENCLAW_AUTH_TOKEN` for deployed gateway routing
+- `OAUTH_CREDENTIALS_ENCRYPTION_KEY` (required)
+- `OAUTH_BASE_URL=https://<your-backend-domain>`
+
+Google OAuth client requirements for hosted:
+
+- Client type: **Web application**
+- Authorized redirect URI: `https://<your-backend-domain>/api/oauth/google/callback`
+
+End-user flow on web:
+
+1. Sign in to Jarvis.
+2. Connect gateway (if required by account routing model).
+3. Paste Client ID + Client Secret.
+4. Consent once in browser.
+5. OAuth remains connected for that account unless revoked/disconnected.
+
 ## Gotchas & Patterns
 
 - **Gateway-only architecture** — ZERO `fs` imports in any route file. All credential/config operations go through `gateway.send()` or `agentExec()`. This is enforced by design for portability.
