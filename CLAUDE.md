@@ -6,7 +6,7 @@ Jarvis is an Iron Man-inspired web dashboard that serves as a visual control sur
 
 ## Core Architecture Principle
 
-**100% of operations route through the OpenClaw Gateway.** The Jarvis UI is designed to be fully portable — it can connect to any OpenClaw instance without local filesystem dependencies. There are ZERO direct filesystem reads/writes in any route file. All credential storage, config management, and skill creation happen through gateway methods (`config.get`, `config.patch`, `chat.send`).
+**AI operations route through the OpenClaw Gateway; user-specific data lives in the local Prisma DB.** The Jarvis UI is designed to be portable — it can connect to any OpenClaw instance. There are ZERO direct filesystem reads/writes in any route file. AI chat, skill management, and provider config go through gateway methods (`config.get`, `config.patch`, `chat.send`). Per-user data (OAuth credentials, tokens, todos, settings) is stored in the local Prisma/SQLite DB with userId scoping.
 
 The only "local" config is the gateway URL + auth token (which defines WHERE to connect), set via environment variables or the Gateway Card UI.
 
@@ -16,7 +16,7 @@ The only "local" config is the gateway URL + auth token (which defines WHERE to 
 jarvis/
 ├── server/          Express 5 + TypeScript backend (port 3001)
 │   ├── src/
-│   │   ├── index.ts           Entry point, route mounting, gateway init + OAuth hydration
+│   │   ├── index.ts           Entry point, route mounting, gateway init, startup validation
 │   │   ├── config.ts          Mutable config from env vars (Record<string, any> & typed)
 │   │   ├── gateway/           OpenClaw WebSocket gateway (protocol v3)
 │   │   │   ├── connection.ts  Singleton gateway class with reconnect()
@@ -36,8 +36,9 @@ jarvis/
 │   │   │   ├── email.ts       Status, inbox (Gmail/Outlook), tags, settings
 │   │   │   ├── crm.ts         CRM features
 │   │   │   ├── oauth.ts       OAuth URLs, callbacks, status, store-credentials
+│   │   │   ├── drive.ts       Google Drive file list/search, Google Docs read
 │   │   │   └── gateway.ts     Gateway status, configure (runtime-only)
-│   │   ├── services/          OAuth, auth, Prisma client
+│   │   ├── services/          OAuth, auth, crypto, Prisma client
 │   │   ├── socket/            Socket.io setup + chat streaming
 │   │   │   ├── index.ts       Socket.io server init
 │   │   │   ├── auth.ts        Socket auth middleware (JWT verification)
@@ -110,7 +111,7 @@ The core AI functionality runs through the OpenClaw gateway, a locally-running A
 - **Graceful degradation**: Server starts even if gateway is down; auto-reconnects with exponential backoff (1s→30s)
 - **Singleton**: `server/src/gateway/connection.ts` exports `gateway` instance
 - **Reconnect**: `gateway.reconnect()` method for hot-reload after config changes
-- **OAuth hydration**: On connect, `index.ts` loads OAuth credentials from `config.jarvis.oauth` into runtime
+- **Per-user OAuth**: OAuth credentials stored per-user in Prisma DB (encrypted), no longer in gateway config
 
 ### Critical: config.patch format
 
@@ -165,11 +166,12 @@ async function agentExec(prompt: string, timeoutMs = 60000) {
 
 ### Critical: API key & credential storage
 
-**All credential storage goes through the gateway.** There are NO direct filesystem writes anywhere.
+**Provider/service credential storage goes through the gateway.** OAuth credentials are stored per-user in the local Prisma DB.
 
 - **Provider API keys** (OpenAI, Anthropic, etc.): Stored via `agentExec()` prompt that writes to `~/.openclaw/.env` on the OpenClaw host, PLUS redundantly stored in gateway config at `models.providers.<provider>.apiKey` via `config.patch` for fast reads
 - **Service keys** (Notion, Trello, etc.): Same `agentExec()` pattern to `~/.openclaw/.env`
-- **OAuth client credentials** (Google/Microsoft): Stored in gateway config at `config.jarvis.oauth.<provider>` via `config.patch`, hydrated into runtime on gateway connect
+- **OAuth client credentials** (Google/Microsoft): Stored **per-user** in Prisma `OAuthCredential` table with AES-256-GCM encrypted `clientSecret`. Resolved via `resolveCredentials(userId, provider)` with legacy env var fallback.
+- **OAuth tokens** (access/refresh): Stored in Prisma `OAuthToken` table. Refresh tokens encrypted at rest via `crypto.service.ts`.
 - **Custom integration credentials**: Stored via `agentExec()` to `~/.openclaw/.env` using idempotent update-or-append pattern
 - **Config metadata tracking**: `config.storedEnvKeys` object tracks which env vars have been stored (for fast status lookups without querying the agent)
 
@@ -178,7 +180,6 @@ async function agentExec(prompt: string, timeoutMs = 60000) {
 ```
 config.models.providers.<provider>.apiKey    — LLM provider API keys (redundant store)
 config.storedEnvKeys.<ENV_VAR_NAME>          — Boolean flags for configured env vars
-config.jarvis.oauth.<provider>               — OAuth client ID + secret
 config.customIntegrations[]                  — Custom API integration metadata array
 config.agents.defaults.model.primary         — Active model selection
 ```
@@ -214,10 +215,11 @@ The Connections page includes a full Custom API Integration Builder that scaffol
 
 ## Database (Prisma/SQLite)
 
-Models: `User`, `Todo`, `EmailTag`, `EmailSettings`, `CrmSettings`, `OAuthToken`, `Notification`, `OnboardingProgress`
+Models: `User`, `Todo`, `EmailTag`, `EmailSettings`, `CrmSettings`, `OAuthToken`, `OAuthCredential`, `Notification`, `OnboardingProgress`
 
 Key relationships:
 - `OAuthToken` has `@@unique([userId, provider])` — one token per provider per user
+- `OAuthCredential` has `@@unique([userId, provider])` — one credential set per provider per user (clientSecret encrypted)
 - All models cascade delete from User
 
 Run migrations: `cd server && npx prisma db push`
@@ -235,20 +237,29 @@ The client API wrapper at `client/lib/api.ts` handles this automatically.
 3. All API routes use `authMiddleware` which reads cookie → verifies JWT → sets `req.user`
 4. Socket.io auth: `GET /api/auth/socket-token` → token passed during socket handshake
 
-## OAuth Flow
+## OAuth Flow (Per-User)
+
+OAuth uses a **per-user "bring your own credentials"** model. Each user stores their own Google Cloud / Azure project credentials.
 
 1. User enters Client ID + Secret on Connections page → `POST /api/oauth/store-credentials`
-2. Credentials saved to gateway config at `config.jarvis.oauth.<provider>` via `config.patch` + hot-reloaded into runtime config (no restart needed)
-3. On server startup/reconnect, credentials are hydrated from gateway config in `index.ts` `connected` event handler
-4. Redirect to `GET /api/oauth/{provider}/auth-url` → consent screen
-5. Provider callback → `GET /api/oauth/{provider}/callback` → exchanges code for tokens
-6. Tokens stored in `OAuthToken` table (Prisma/SQLite), auto-refreshed when within 5 min of expiry
-7. Calendar/email routes check for tokens via `getTokensForProvider(userId, provider)`
+2. Credentials stored per-user in Prisma `OAuthCredential` table (clientSecret AES-256-GCM encrypted via `crypto.service.ts`)
+3. Redirect to `GET /api/oauth/{provider}/auth-url` → resolves per-user credentials → consent screen
+4. Provider callback → `GET /api/oauth/{provider}/callback` → resolves credentials from state JWT userId → exchanges code for tokens
+5. Tokens stored in `OAuthToken` table (refresh token encrypted), auto-refreshed when within 5 min of expiry
+6. Calendar/email/drive routes use `getGoogleApiClient(userId)` or `getTokensForProvider(userId, provider)`
+
+**Credential resolution precedence** (`resolveCredentials(userId, provider)`):
+1. Per-user DB credentials (`OAuthCredential` table) — primary
+2. Legacy env vars (`GOOGLE_CLIENT_ID` etc.) — deprecated fallback, logs warning
+
+**Disconnect vs Remove:**
+- `POST /disconnect/:provider` — revokes tokens only, keeps credentials for easy reconnect
+- `POST /disconnect/:provider?deleteCredentials=true` — revokes tokens + deletes stored credentials
 
 Google scopes: gmail.modify, calendar, spreadsheets, documents, drive.file, userinfo.email, userinfo.profile
 Microsoft scopes: Mail.ReadWrite, Calendars.ReadWrite, Files.ReadWrite.All, User.Read, offline_access
 
-OAuth callbacks must point to Express (port 3001) directly since they are full page navigations.
+OAuth callback URL is derived from `OAUTH_BASE_URL` env var (required in production). Callbacks must point to Express directly since they are full page navigations.
 
 ## Socket.io Events
 
@@ -278,6 +289,7 @@ OAuth callbacks must point to Express (port 3001) directly since they are full p
 | `/api/email` | routes/email.ts | Status, inbox (Gmail/Outlook), tags, settings |
 | `/api/crm` | routes/crm.ts | CRM features |
 | `/api/oauth` | routes/oauth.ts | OAuth URLs, callbacks, status, disconnect, store-credentials |
+| `/api/drive` | routes/drive.ts | Google Drive file list/search, Google Docs read |
 | `/api/gateway` | routes/gateway.ts | Gateway status, configure (runtime-only, no file writes) |
 
 ## Design System
@@ -324,28 +336,58 @@ PORT=3001
 JWT_SECRET=<random-string>
 OPENCLAW_GATEWAY_URL=ws://127.0.0.1:18789
 OPENCLAW_AUTH_TOKEN=<from-openclaw>
-GOOGLE_CLIENT_ID=<optional — also stored in gateway config>
-GOOGLE_CLIENT_SECRET=<optional — also stored in gateway config>
-GOOGLE_REDIRECT_URI=http://localhost:3001/api/oauth/google/callback
-MICROSOFT_CLIENT_ID=<optional — also stored in gateway config>
-MICROSOFT_CLIENT_SECRET=<optional — also stored in gateway config>
-MICROSOFT_REDIRECT_URI=http://localhost:3001/api/oauth/microsoft/callback
+OAUTH_CREDENTIALS_ENCRYPTION_KEY=<32-byte-hex — required in production>
+OAUTH_BASE_URL=<server-public-url — required in production>
+# Legacy (deprecated — migrate to per-user credentials via Connections UI):
+GOOGLE_CLIENT_ID=<optional — deprecated fallback>
+GOOGLE_CLIENT_SECRET=<optional — deprecated fallback>
+GOOGLE_REDIRECT_URI=<optional — deprecated fallback>
+MICROSOFT_CLIENT_ID=<optional — deprecated fallback>
+MICROSOFT_CLIENT_SECRET=<optional — deprecated fallback>
+MICROSOFT_REDIRECT_URI=<optional — deprecated fallback>
 ```
 
-Template at `server/.env.example`. The config object in `server/src/config.ts` is intentionally mutable (`Record<string, any> &`) so credentials can be hot-reloaded at runtime from gateway config without restarting.
+The config object in `server/src/config.ts` is intentionally mutable (`Record<string, any> &`) so credentials can be updated at runtime.
 
-**Note:** The only values that MUST be in the local `.env` are `JWT_SECRET`, `OPENCLAW_GATEWAY_URL`, and `OPENCLAW_AUTH_TOKEN`. All other credentials (OAuth, provider keys, service keys) are stored in and read from the gateway config, making the UI fully portable.
+**Required in production:** `JWT_SECRET`, `OPENCLAW_GATEWAY_URL`, `OPENCLAW_AUTH_TOKEN`, `OAUTH_CREDENTIALS_ENCRYPTION_KEY`, `OAUTH_BASE_URL`. The server will `process.exit(1)` if encryption key is missing in production.
+
+**Required in dev:** `JWT_SECRET`, `OPENCLAW_GATEWAY_URL`, `OPENCLAW_AUTH_TOKEN`. Encryption key falls back to JWT_SECRET derivation with warning. OAuth base URL falls back to `http://localhost:3001`.
+
+OAuth credentials (Google/Microsoft) are stored per-user in the DB, not in env vars. Legacy env vars are a deprecated fallback.
+
+## Production Notes
+
+OAuth configuration differs between local development and production deployment:
+
+- **Local dev (current setup)**: set `OAUTH_BASE_URL=http://localhost:3001` so OAuth callbacks return to the local backend.
+- **Production (website deployment)**: set `OAUTH_BASE_URL` to your public backend origin (example: `https://api.yourdomain.com`). Do not leave this as localhost.
+- **Encryption key**: set `OAUTH_CREDENTIALS_ENCRYPTION_KEY` to a 32-byte key (hex or base64). This is required in production.
+
+Generate a production-safe encryption key:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+Recommended OAuth setup behavior:
+
+- Users paste **Client ID** and **Client Secret** into Jarvis (two fields).
+- Jarvis stores credentials securely and handles browser OAuth consent/callback.
+- Keep legacy `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` empty when using per-user OAuth.
+- In Google Cloud Console, each OAuth client must include the exact backend callback URL:
+  - `<OAUTH_BASE_URL>/api/oauth/google/callback`
 
 ## Gotchas & Patterns
 
 - **Gateway-only architecture** — ZERO `fs` imports in any route file. All credential/config operations go through `gateway.send()` or `agentExec()`. This is enforced by design for portability.
-- **config.ts is mutable** — The intersection type `Record<string, any> &` allows runtime updates when hydrating OAuth/gateway credentials from gateway config
-- **OAuth hydration on connect** — `index.ts` listens for gateway `"connected"` event and loads `config.jarvis.oauth.*` into runtime config automatically
-- **patchConfig retry** — All `config.patch` calls should use the `patchConfig()` helper with retry logic to handle hash conflicts from concurrent writes
+- **config.ts is mutable** — The intersection type `Record<string, any> &` allows runtime updates
+- **Per-user OAuth credentials** — Stored in Prisma `OAuthCredential` table (encrypted). Resolved per-request via `resolveCredentials(userId, provider)` with legacy env var fallback. OAuth routes no longer use gateway `patchConfig`.
+- **Encrypted OAuth secrets** — `crypto.service.ts` uses AES-256-GCM with `OAUTH_CREDENTIALS_ENCRYPTION_KEY`. Refresh tokens in `OAuthToken` also encrypted. Legacy plaintext tokens handled gracefully (try decrypt, fallback to raw value, re-encrypt on next refresh).
+- **patchConfig retry** — Used by connections/integrations routes (NOT oauth routes). Handles hash conflicts from concurrent writes
 - **agentExec idempotent prompts** — Credential storage prompts use "update-or-append" pattern: if a line starting with `KEY=` exists, replace it; otherwise append. This prevents duplicates on retry.
 - **deliver: "full"** — Used in `agentExec()` and calendar's `build-agenda` to get complete agent responses synchronously without streaming
 - **Next.js rewrites** — All `/api/*` requests proxy from :3000 to :3001 via `next.config.ts`
-- **OAuth callbacks bypass proxy** — Must use `http://localhost:3001/api/oauth/...` directly
+- **OAuth callbacks bypass proxy** — Must point to Express directly (configured via `OAUTH_BASE_URL`)
 - **OpenClaw .env** — Provider API keys (OpenAI, Anthropic, etc.) are written to `~/.openclaw/.env` via agent prompts through the gateway
 - **chat.send streaming** — Gateway sends events; the socket handler in `server/src/socket/chat.ts` forwards them as Socket.io events
 - **Prisma generate** — Run `npx prisma generate` if you modify schema.prisma, then `npx prisma db push` to apply

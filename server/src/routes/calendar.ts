@@ -4,8 +4,7 @@ import { authMiddleware } from "../middleware/auth";
 import { AuthRequest } from "../types";
 import { prisma } from "../services/prisma";
 import { gateway } from "../gateway/connection";
-import { getTokensForProvider } from "../services/oauth.service";
-import { config } from "../config";
+import { getTokensForProvider, getGoogleApiClient } from "../services/oauth.service";
 
 const router = Router();
 
@@ -108,6 +107,7 @@ router.get("/events", async (req: AuthRequest, res: Response) => {
     if (googleTokens) {
       try {
         const gcalEvents = await fetchGoogleCalendarEvents(
+          userId,
           googleTokens.accessToken,
           startDate,
           endDate
@@ -190,15 +190,15 @@ function formatTime(isoString: string): string {
 }
 
 async function fetchGoogleCalendarEvents(
+  userId: string,
   accessToken: string,
   start: Date,
   end: Date
 ): Promise<CalendarEvent[]> {
-  const oauth2Client = new google.auth.OAuth2(
-    config.googleClientId,
-    config.googleClientSecret
-  );
-  oauth2Client.setCredentials({ access_token: accessToken });
+  const oauth2Client = await getGoogleApiClient(userId);
+  if (!oauth2Client) {
+    throw new Error("Google API client not available");
+  }
 
   const calendar = google.calendar({ version: "v3", auth: oauth2Client });
 
@@ -297,6 +297,7 @@ async function fetchCalendarEvents(userId: string): Promise<CalendarEvent[]> {
   if (googleTokens) {
     try {
       const gcal = await fetchGoogleCalendarEvents(
+        userId,
         googleTokens.accessToken,
         today,
         tomorrow

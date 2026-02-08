@@ -10,6 +10,9 @@ export const config: Record<string, any> & {
   corsOrigin: string;
   cookieName: string;
   cookieMaxAge: number;
+  oauthBaseUrl: string;
+  oauthEncryptionKey: string;
+  // Legacy OAuth fields (deprecated — migrate to per-user credentials)
   googleClientId: string;
   googleClientSecret: string;
   googleRedirectUri: string;
@@ -27,7 +30,11 @@ export const config: Record<string, any> & {
   cookieName: "jarvis_token",
   cookieMaxAge: 7 * 24 * 60 * 60 * 1000, // 7 days in ms
 
-  // OAuth — Google
+  // OAuth — per-user encryption & callback base URL
+  oauthBaseUrl: process.env.OAUTH_BASE_URL || "",
+  oauthEncryptionKey: process.env.OAUTH_CREDENTIALS_ENCRYPTION_KEY || "",
+
+  // OAuth — Google (deprecated: legacy env fallback, migrate to per-user credentials)
   googleClientId: process.env.GOOGLE_CLIENT_ID || "",
   googleClientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
   googleRedirectUri: process.env.GOOGLE_REDIRECT_URI || "http://localhost:3001/api/oauth/google/callback",

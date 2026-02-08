@@ -48,6 +48,100 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-08 — Update CLAUDE.md for per-user OAuth architecture
+
+**Author:** Omid (via Claude Code)
+**Commit:** Update CLAUDE.md to reflect per-user OAuth, Drive API, encrypted credentials
+**Branch:** oz/per-user-oauth
+
+**What changed:**
+- Updated Core Architecture Principle to clarify gateway vs local DB split (AI ops → gateway, user data → Prisma)
+- Updated architecture tree: added `drive.ts` route, `crypto.service.ts` in services
+- Replaced "OAuth hydration" references with per-user OAuth credential resolution
+- Updated credential storage docs: OAuth credentials now per-user in Prisma (encrypted), not gateway config
+- Removed `config.jarvis.oauth.<provider>` from gateway namespace conventions
+- Added `OAuthCredential` to Database models section
+- Rewrote OAuth Flow section for per-user model with credential resolution precedence and disconnect vs remove
+- Added `/api/drive` to API Route Map
+- Updated Environment Variables: added `OAUTH_CREDENTIALS_ENCRYPTION_KEY` and `OAUTH_BASE_URL`, marked legacy OAuth env vars as deprecated
+- Updated Gotchas: per-user OAuth, encrypted secrets, legacy plaintext token handling, OAuth callback URL
+
+**Why:**
+- CLAUDE.md must stay in sync with architectural changes so future agents understand the current credential model
+
+**Files touched:**
+- `CLAUDE.md`
+
+---
+
+## 2026-02-08 — Harden per-user OAuth: prod exit, legacy token compat, UX fix
+
+**Author:** Omid (via Claude Code)
+**Commit:** Harden per-user OAuth: prod exit, legacy plaintext token fallback, remove-creds UX
+**Branch:** oz/per-user-oauth
+
+**What changed:**
+- `index.ts`: `process.exit(1)` when `OAUTH_CREDENTIALS_ENCRYPTION_KEY` is missing in production (was logging "FATAL" but continuing)
+- `oauth.service.ts`: wrapped `decrypt()` calls in `refreshGoogleToken` and `refreshMicrosoftToken` with try/catch — if token is legacy plaintext, uses it as-is and re-encrypts on the next successful refresh
+- `OAuthAccountCard.tsx`: added "Remove Credentials" (trash icon button) in the configured-but-disconnected state, so users can fully reconfigure without connecting first
+
+**Why:**
+- Logging "FATAL" without exiting is misleading — server would start and then crash on first OAuth operation
+- Pre-existing plaintext refresh tokens would crash `decrypt()` and break token refresh for anyone upgrading
+- Users in "configured but disconnected" state had no way to remove credentials without connecting first
+
+**Files touched:**
+- `server/src/index.ts` — added `process.exit(1)` for missing encryption key in production
+- `server/src/services/oauth.service.ts` — added try/catch around `decrypt()` in both refresh functions
+- `client/components/connections/OAuthAccountCard.tsx` — added remove-credentials button in disconnected state
+
+---
+
+## 2026-02-08 — Per-user Google OAuth + Google Drive/Docs surface
+
+**Author:** Omid (via Claude Code)
+**Commit:** Per-user OAuth credentials, encrypted storage, Drive/Docs API, auth hardening
+**Branch:** oz/per-user-oauth
+
+**What changed:**
+- Added `OAuthCredential` Prisma model with `@@unique([userId, provider])` for per-user OAuth client credential storage (clientSecret encrypted via AES-256-GCM)
+- Created `server/src/services/crypto.service.ts` — AES-256-GCM encrypt/decrypt using dedicated `OAUTH_CREDENTIALS_ENCRYPTION_KEY` env var (falls back to JWT_SECRET derivation in dev with warning)
+- Removed hardcoded fallback user from `authMiddleware` — now returns proper 401 instead of auto-assigning a fake user
+- Refactored `oauth.service.ts` with per-user credential resolution: DB credentials → legacy env var fallback (deprecated). All Google/Microsoft functions now async-resolve per-user credentials.
+- Added `getGoogleApiClient(userId)` — returns configured OAuth2 client with valid access token, used by email/calendar/drive routes
+- Encrypted refresh tokens: all `OAuthToken.refreshToken` values now stored encrypted, decrypted on read
+- Added proper Google token revocation via `https://oauth2.googleapis.com/revoke` endpoint before DB deletion
+- Added `storeUserOAuthCredentials()`, `deleteUserOAuthCredentials()` for per-user credential CRUD
+- Replaced gateway `patchConfig()` in OAuth routes with Prisma DB storage — OAuth credentials no longer stored in gateway config
+- Added `?deleteCredentials=true` query param to `POST /disconnect/:provider` for full credential removal
+- Updated `email.ts` and `calendar.ts` to use `getGoogleApiClient(userId)` instead of `new google.auth.OAuth2(config.googleClientId, ...)`
+- Created `server/src/routes/drive.ts` with 3 endpoints: `GET /api/drive/files` (list/filter), `GET /api/drive/search` (full-text), `GET /api/drive/docs/:docId` (read Google Doc content)
+- Added `oauthBaseUrl` and `oauthEncryptionKey` to `server/src/config.ts`
+- Removed OAuth hydration from gateway `connected` handler in `index.ts`; added startup validation warnings
+- Updated `OAuthAccountCard.tsx` with "Remove Credentials" button alongside "Disconnect" — disconnect keeps credentials for easy reconnect, remove deletes everything
+
+**Why:**
+- OAuth credentials were stored globally in the gateway config — all users shared one OAuth app, breaking multi-user isolation. Per-user DB storage with encryption fixes this.
+- The hardcoded fallback user in auth middleware was a security hole that bypassed authentication entirely.
+- Refresh tokens were stored in plaintext in the database.
+- Google Drive/Docs scopes were requested but no API endpoints existed to use them.
+- `revokeToken()` just deleted from DB without calling Google's actual revocation endpoint.
+
+**Files touched:**
+- `server/prisma/schema.prisma` — added `OAuthCredential` model + relation on `User`
+- `server/src/services/crypto.service.ts` — **new** — AES-256-GCM encrypt/decrypt
+- `server/src/middleware/auth.ts` — removed hardcoded fallback user, returns 401
+- `server/src/services/oauth.service.ts` — major refactor: per-user credential resolution, encrypted tokens, Google revocation, `getGoogleApiClient()`
+- `server/src/routes/oauth.ts` — replaced gateway patchConfig with Prisma storage, added `deleteCredentials` param
+- `server/src/routes/email.ts` — uses `getGoogleApiClient(userId)` instead of global config
+- `server/src/routes/calendar.ts` — uses `getGoogleApiClient(userId)` instead of global config
+- `server/src/routes/drive.ts` — **new** — Google Drive file list/search + Google Docs read
+- `server/src/config.ts` — added `oauthBaseUrl`, `oauthEncryptionKey`
+- `server/src/index.ts` — mounted drive routes, removed OAuth hydration, added startup checks
+- `client/components/connections/OAuthAccountCard.tsx` — added "Remove Credentials" button
+
+---
+
 ## 2026-02-07 — Add stage-based progress messages to chat thinking indicator
 
 **Author:** Omid (via Claude Code)

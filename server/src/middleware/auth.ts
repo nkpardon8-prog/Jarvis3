@@ -8,22 +8,21 @@ export function authMiddleware(
   res: Response,
   next: NextFunction
 ): void {
-  // Try cookie first, then Authorization header
   const token =
     req.cookies?.[config.cookieName] ||
     req.headers.authorization?.replace("Bearer ", "");
 
-  if (!token) {
+  if (token) {
+    const payload = verifyJWT(token);
+    if (payload) {
+      req.user = payload;
+    }
+  }
+
+  if (!req.user) {
     res.status(401).json({ ok: false, error: "Authentication required" });
     return;
   }
 
-  const payload = verifyJWT(token);
-  if (!payload) {
-    res.status(401).json({ ok: false, error: "Invalid or expired token" });
-    return;
-  }
-
-  req.user = payload;
   next();
 }

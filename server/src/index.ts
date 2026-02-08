@@ -18,6 +18,7 @@ import crmRoutes from "./routes/crm";
 import oauthRoutes from "./routes/oauth";
 import gatewayRoutes from "./routes/gateway";
 import integrationsRoutes from "./routes/integrations";
+import driveRoutes from "./routes/drive";
 import { gateway } from "./gateway/connection";
 import { setupSocketIO } from "./socket";
 
@@ -46,12 +47,34 @@ app.use("/api/crm", crmRoutes);
 app.use("/api/oauth", oauthRoutes);
 app.use("/api/gateway", gatewayRoutes);
 app.use("/api/integrations", integrationsRoutes);
+app.use("/api/drive", driveRoutes);
 
 // Error handler (must be last)
 app.use(errorHandler);
 
 // Setup Socket.io (must be done before listen)
 const io = setupSocketIO(httpServer, gateway);
+
+// Startup validation
+if (!config.oauthEncryptionKey) {
+  if (process.env.NODE_ENV === "production") {
+    console.error("[Jarvis] FATAL: OAUTH_CREDENTIALS_ENCRYPTION_KEY is required in production. Exiting.");
+    process.exit(1);
+  } else {
+    console.warn("[Jarvis] WARNING: OAUTH_CREDENTIALS_ENCRYPTION_KEY not set — using dev fallback from JWT_SECRET");
+  }
+}
+if (!config.oauthBaseUrl) {
+  if (process.env.NODE_ENV === "production") {
+    console.warn("[Jarvis] WARNING: OAUTH_BASE_URL not set — OAuth callbacks may not work in production");
+  }
+}
+if (config.googleClientId) {
+  console.warn("[Jarvis] DEPRECATED: GOOGLE_CLIENT_ID env var detected. Migrate to per-user OAuth credentials via the Connections UI.");
+}
+if (config.microsoftClientId) {
+  console.warn("[Jarvis] DEPRECATED: MICROSOFT_CLIENT_ID env var detected. Migrate to per-user OAuth credentials via the Connections UI.");
+}
 
 // Start server
 httpServer.listen(config.port, async () => {
@@ -72,23 +95,6 @@ httpServer.listen(config.port, async () => {
 
   gateway.on("connected", async () => {
     console.log("[Jarvis] Gateway reconnected");
-    // Hydrate OAuth credentials from gateway config into runtime
-    try {
-      const result = (await gateway.send("config.get", {})) as any;
-      const oauthCfg = result?.config?.jarvis?.oauth;
-      if (oauthCfg?.google?.clientId) {
-        config.googleClientId = oauthCfg.google.clientId;
-        config.googleClientSecret = oauthCfg.google.clientSecret;
-        console.log("[Jarvis] Loaded Google OAuth credentials from gateway config");
-      }
-      if (oauthCfg?.microsoft?.clientId) {
-        config.microsoftClientId = oauthCfg.microsoft.clientId;
-        config.microsoftClientSecret = oauthCfg.microsoft.clientSecret;
-        console.log("[Jarvis] Loaded Microsoft OAuth credentials from gateway config");
-      }
-    } catch {
-      // Non-critical — OAuth may not be configured
-    }
   });
 });
 

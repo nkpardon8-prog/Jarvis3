@@ -8,50 +8,23 @@ import {
   handleMicrosoftCallback,
   getOAuthStatus,
   revokeToken,
+  storeUserOAuthCredentials,
+  deleteUserOAuthCredentials,
 } from "../services/oauth.service";
 import { config } from "../config";
-import { gateway } from "../gateway/connection";
 
 const router = Router();
-
-// ─── Helpers ────────────────────────────────────────────
-
-/** Patch gateway config with retry on hash conflict */
-async function patchConfig(
-  updateFn: (cfg: any) => any,
-  maxRetries = 2
-): Promise<any> {
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const current = (await gateway.send("config.get", {})) as any;
-    const hash = current?.hash;
-    if (!hash) throw new Error("Could not get config hash");
-
-    const merged = updateFn(current?.config || {});
-    try {
-      return await gateway.send("config.patch", {
-        raw: JSON.stringify(merged, null, 2),
-        baseHash: hash,
-      });
-    } catch (err: any) {
-      if (attempt === maxRetries) throw err;
-    }
-  }
-}
 
 // ─── Google OAuth ──────────────────────────────────────────
 
 /** Get Google consent URL (requires auth) */
-router.get("/google/auth-url", authMiddleware, (req: AuthRequest, res: Response) => {
-  if (!config.googleClientId) {
-    res.status(400).json({
-      ok: false,
-      error: "Google OAuth not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env",
-    });
-    return;
+router.get("/google/auth-url", authMiddleware, async (req: AuthRequest, res: Response) => {
+  try {
+    const url = await getGoogleAuthUrl(req.user!.userId);
+    res.json({ ok: true, data: { url } });
+  } catch (err: any) {
+    res.status(400).json({ ok: false, error: err.message });
   }
-
-  const url = getGoogleAuthUrl(req.user!.userId);
-  res.json({ ok: true, data: { url } });
 });
 
 /** Google OAuth callback — state JWT has userId, no auth middleware needed */
@@ -86,17 +59,13 @@ router.get("/google/callback", async (req: Request, res: Response) => {
 // ─── Microsoft OAuth ──────────────────────────────────────
 
 /** Get Microsoft consent URL (requires auth) */
-router.get("/microsoft/auth-url", authMiddleware, (req: AuthRequest, res: Response) => {
-  if (!config.microsoftClientId) {
-    res.status(400).json({
-      ok: false,
-      error: "Microsoft OAuth not configured. Set MICROSOFT_CLIENT_ID and MICROSOFT_CLIENT_SECRET in .env",
-    });
-    return;
+router.get("/microsoft/auth-url", authMiddleware, async (req: AuthRequest, res: Response) => {
+  try {
+    const url = await getMicrosoftAuthUrl(req.user!.userId);
+    res.json({ ok: true, data: { url } });
+  } catch (err: any) {
+    res.status(400).json({ ok: false, error: err.message });
   }
-
-  const url = getMicrosoftAuthUrl(req.user!.userId);
-  res.json({ ok: true, data: { url } });
 });
 
 /** Microsoft OAuth callback — state JWT has userId, no auth middleware needed */
@@ -150,14 +119,23 @@ router.post("/disconnect/:provider", authMiddleware, async (req: AuthRequest, re
       return;
     }
 
-    await revokeToken(req.user!.userId, provider as string);
-    res.json({ ok: true, data: { disconnected: true } });
+    const deleteCredentials = req.query.deleteCredentials === "true";
+
+    if (deleteCredentials) {
+      // Revoke tokens + delete stored credentials
+      await deleteUserOAuthCredentials(req.user!.userId, provider as string);
+    } else {
+      // Revoke tokens only — keeps credentials for easy reconnect
+      await revokeToken(req.user!.userId, provider as string);
+    }
+
+    res.json({ ok: true, data: { disconnected: true, credentialsDeleted: deleteCredentials } });
   } catch (err: any) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-/** Store OAuth client credentials in gateway config and update runtime */
+/** Store OAuth client credentials per-user in DB (encrypted) */
 router.post("/store-credentials", authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
     const { provider, clientId, clientSecret } = req.body;
@@ -171,34 +149,12 @@ router.post("/store-credentials", authMiddleware, async (req: AuthRequest, res: 
       return;
     }
 
-    // Map provider to config key names
-    const configMap: Record<string, { configId: string; configSecret: string }> = {
-      google: {
-        configId: "googleClientId",
-        configSecret: "googleClientSecret",
-      },
-      microsoft: {
-        configId: "microsoftClientId",
-        configSecret: "microsoftClientSecret",
-      },
-    };
-
-    const vars = configMap[provider];
-
-    // Store in gateway config so any Jarvis instance can read them
-    await patchConfig((cfg) => {
-      if (!cfg.jarvis) cfg.jarvis = {};
-      if (!cfg.jarvis.oauth) cfg.jarvis.oauth = {};
-      cfg.jarvis.oauth[provider] = {
-        clientId: clientId.trim(),
-        clientSecret: clientSecret.trim(),
-      };
-      return cfg;
-    });
-
-    // Update runtime config so this server instance picks it up immediately
-    config[vars.configId] = clientId.trim();
-    config[vars.configSecret] = clientSecret.trim();
+    await storeUserOAuthCredentials(
+      req.user!.userId,
+      provider,
+      clientId.trim(),
+      clientSecret.trim()
+    );
 
     res.json({ ok: true, data: { saved: true } });
   } catch (err: any) {

@@ -12,6 +12,7 @@ import {
   EyeOff,
   Save,
   Key,
+  Trash2,
 } from "lucide-react";
 import { api } from "@/lib/api";
 
@@ -83,6 +84,7 @@ export function OAuthAccountCard({
 }: OAuthAccountCardProps) {
   const [connecting, setConnecting] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
+  const [removingCreds, setRemovingCreds] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Credential setup fields
@@ -167,6 +169,23 @@ export function OAuthAccountCard({
     setDisconnecting(false);
   };
 
+  const handleDeleteCredentials = async () => {
+    setRemovingCreds(true);
+    setError(null);
+
+    try {
+      const res = await api.post(`/oauth/disconnect/${provider}?deleteCredentials=true`);
+      if (res.ok) {
+        onStatusChange();
+      } else {
+        setError(res.error || "Failed to remove credentials");
+      }
+    } catch {
+      setError("Network error");
+    }
+    setRemovingCreds(false);
+  };
+
   // Filter out generic scopes to show only service-related ones
   const serviceScopes = (status.scopes || []).filter(
     (s) =>
@@ -218,22 +237,40 @@ export function OAuthAccountCard({
             </div>
           )}
 
-          <HudButton
-            variant="danger"
-            size="sm"
-            onClick={handleDisconnect}
-            disabled={disconnecting}
-            className="w-full"
-          >
-            {disconnecting ? (
-              <LoadingSpinner size="sm" />
-            ) : (
-              <>
-                <LogOut size={12} />
-                Disconnect
-              </>
-            )}
-          </HudButton>
+          <div className="flex gap-2">
+            <HudButton
+              variant="danger"
+              size="sm"
+              onClick={handleDisconnect}
+              disabled={disconnecting || removingCreds}
+              className="flex-1"
+            >
+              {disconnecting ? (
+                <LoadingSpinner size="sm" />
+              ) : (
+                <>
+                  <LogOut size={12} />
+                  Disconnect
+                </>
+              )}
+            </HudButton>
+            <HudButton
+              variant="danger"
+              size="sm"
+              onClick={handleDeleteCredentials}
+              disabled={disconnecting || removingCreds}
+              className="flex-1"
+            >
+              {removingCreds ? (
+                <LoadingSpinner size="sm" />
+              ) : (
+                <>
+                  <Trash2 size={12} />
+                  Remove Credentials
+                </>
+              )}
+            </HudButton>
+          </div>
         </div>
       ) : !status.configured ? (
         /* ── Not configured — credential input fields ── */
@@ -382,22 +419,37 @@ export function OAuthAccountCard({
             </div>
           </details>
 
-          <HudButton
-            variant="primary"
-            size="sm"
-            onClick={handleConnect}
-            disabled={connecting}
-            className="w-full"
-          >
-            {connecting ? (
-              <LoadingSpinner size="sm" />
-            ) : (
-              <>
-                <ExternalLink size={12} />
-                Connect {label}
-              </>
-            )}
-          </HudButton>
+          <div className="flex gap-2">
+            <HudButton
+              variant="primary"
+              size="sm"
+              onClick={handleConnect}
+              disabled={connecting || removingCreds}
+              className="flex-1"
+            >
+              {connecting ? (
+                <LoadingSpinner size="sm" />
+              ) : (
+                <>
+                  <ExternalLink size={12} />
+                  Connect {label}
+                </>
+              )}
+            </HudButton>
+            <HudButton
+              variant="danger"
+              size="sm"
+              onClick={handleDeleteCredentials}
+              disabled={connecting || removingCreds}
+              className="flex-none"
+            >
+              {removingCreds ? (
+                <LoadingSpinner size="sm" />
+              ) : (
+                <Trash2 size={12} />
+              )}
+            </HudButton>
+          </div>
         </div>
       )}
 

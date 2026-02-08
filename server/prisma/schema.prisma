@@ -23,6 +23,7 @@ model User {
   emailSettings       EmailSettings?
   crmSettings         CrmSettings?
   oauthTokens         OAuthToken[]
+  oauthCredentials    OAuthCredential[]
   notifications       Notification[]
   onboardingProgress  OnboardingProgress?
 }
@@ -86,6 +87,20 @@ model OAuthToken {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@unique([userId, provider])
+}
+
+model OAuthCredential {
+  id           String   @id @default(uuid())
+  userId       String
+  provider     String   // "google" or "microsoft"
+  clientId     String
+  clientSecret String   // AES-256-GCM encrypted at application layer
+  redirectUri  String?  // Optional per-user override; falls back to server default
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   @@unique([userId, provider])
 }
 

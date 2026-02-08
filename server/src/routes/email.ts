@@ -3,8 +3,7 @@ import { google } from "googleapis";
 import { authMiddleware } from "../middleware/auth";
 import { AuthRequest } from "../types";
 import { prisma } from "../services/prisma";
-import { getTokensForProvider } from "../services/oauth.service";
-import { config } from "../config";
+import { getTokensForProvider, getGoogleApiClient } from "../services/oauth.service";
 
 const router = Router();
 
@@ -64,6 +63,7 @@ router.get("/inbox", async (req: AuthRequest, res: Response) => {
     if (googleTokens) {
       try {
         const gmailMessages = await fetchGmailMessages(
+          userId,
           googleTokens.accessToken,
           maxResults
         );
@@ -248,14 +248,14 @@ interface EmailMessage {
 }
 
 async function fetchGmailMessages(
+  userId: string,
   accessToken: string,
   maxResults: number
 ): Promise<EmailMessage[]> {
-  const oauth2Client = new google.auth.OAuth2(
-    config.googleClientId,
-    config.googleClientSecret
-  );
-  oauth2Client.setCredentials({ access_token: accessToken });
+  const oauth2Client = await getGoogleApiClient(userId);
+  if (!oauth2Client) {
+    throw new Error("Google API client not available");
+  }
 
   const gmail = google.gmail({ version: "v1", auth: oauth2Client });
 
