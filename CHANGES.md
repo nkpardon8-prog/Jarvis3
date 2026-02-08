@@ -48,6 +48,29 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-08 — Harden per-user OAuth: prod exit, legacy token compat, UX fix
+
+**Author:** Omid (via Claude Code)
+**Commit:** Harden per-user OAuth: prod exit, legacy plaintext token fallback, remove-creds UX
+**Branch:** oz/per-user-oauth
+
+**What changed:**
+- `index.ts`: `process.exit(1)` when `OAUTH_CREDENTIALS_ENCRYPTION_KEY` is missing in production (was logging "FATAL" but continuing)
+- `oauth.service.ts`: wrapped `decrypt()` calls in `refreshGoogleToken` and `refreshMicrosoftToken` with try/catch — if token is legacy plaintext, uses it as-is and re-encrypts on the next successful refresh
+- `OAuthAccountCard.tsx`: added "Remove Credentials" (trash icon button) in the configured-but-disconnected state, so users can fully reconfigure without connecting first
+
+**Why:**
+- Logging "FATAL" without exiting is misleading — server would start and then crash on first OAuth operation
+- Pre-existing plaintext refresh tokens would crash `decrypt()` and break token refresh for anyone upgrading
+- Users in "configured but disconnected" state had no way to remove credentials without connecting first
+
+**Files touched:**
+- `server/src/index.ts` — added `process.exit(1)` for missing encryption key in production
+- `server/src/services/oauth.service.ts` — added try/catch around `decrypt()` in both refresh functions
+- `client/components/connections/OAuthAccountCard.tsx` — added remove-credentials button in disconnected state
+
+---
+
 ## 2026-02-08 — Per-user Google OAuth + Google Drive/Docs surface
 
 **Author:** Omid (via Claude Code)

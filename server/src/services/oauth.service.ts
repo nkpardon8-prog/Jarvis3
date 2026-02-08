@@ -255,9 +255,18 @@ async function refreshGoogleToken(tokenRecord: any): Promise<string | null> {
   const creds = await resolveCredentials(tokenRecord.userId, "google");
   if (!creds) return null;
 
-  const decryptedRefresh = decrypt(tokenRecord.refreshToken);
+  // Handle both encrypted and legacy plaintext refresh tokens
+  let refreshTokenValue: string;
+  try {
+    refreshTokenValue = decrypt(tokenRecord.refreshToken);
+  } catch {
+    // Legacy plaintext token — use as-is, will be re-encrypted on next write
+    console.warn("[OAuth] Legacy plaintext refresh token detected for Google — will re-encrypt on next refresh");
+    refreshTokenValue = tokenRecord.refreshToken;
+  }
+
   const client = getGoogleOAuth2Client(creds);
-  client.setCredentials({ refresh_token: decryptedRefresh });
+  client.setCredentials({ refresh_token: refreshTokenValue });
 
   try {
     const { credentials } = await client.refreshAccessToken();
@@ -267,7 +276,7 @@ async function refreshGoogleToken(tokenRecord: any): Promise<string | null> {
       where: { id: tokenRecord.id },
       data: {
         accessToken: credentials.access_token,
-        refreshToken: credentials.refresh_token ? encrypt(credentials.refresh_token) : undefined,
+        refreshToken: credentials.refresh_token ? encrypt(credentials.refresh_token) : encrypt(refreshTokenValue),
         expiresAt: credentials.expiry_date ? new Date(credentials.expiry_date) : null,
       },
     });
@@ -395,7 +404,14 @@ async function refreshMicrosoftToken(tokenRecord: any): Promise<string | null> {
   const creds = await resolveCredentials(tokenRecord.userId, "microsoft");
   if (!creds) return null;
 
-  const decryptedRefresh = decrypt(tokenRecord.refreshToken);
+  // Handle both encrypted and legacy plaintext refresh tokens
+  let refreshTokenValue: string;
+  try {
+    refreshTokenValue = decrypt(tokenRecord.refreshToken);
+  } catch {
+    console.warn("[OAuth] Legacy plaintext refresh token detected for Microsoft — will re-encrypt on next refresh");
+    refreshTokenValue = tokenRecord.refreshToken;
+  }
 
   try {
     const tokenRes = await fetch(`${MS_AUTH_BASE}/token`, {
@@ -404,7 +420,7 @@ async function refreshMicrosoftToken(tokenRecord: any): Promise<string | null> {
       body: new URLSearchParams({
         client_id: creds.clientId,
         client_secret: creds.clientSecret,
-        refresh_token: decryptedRefresh,
+        refresh_token: refreshTokenValue,
         grant_type: "refresh_token",
         scope: MICROSOFT_SCOPES.join(" "),
       }),
@@ -421,7 +437,7 @@ async function refreshMicrosoftToken(tokenRecord: any): Promise<string | null> {
       where: { id: tokenRecord.id },
       data: {
         accessToken: tokenData.access_token,
-        refreshToken: tokenData.refresh_token ? encrypt(tokenData.refresh_token) : encrypt(decryptedRefresh),
+        refreshToken: tokenData.refresh_token ? encrypt(tokenData.refresh_token) : encrypt(refreshTokenValue),
         expiresAt,
       },
     });

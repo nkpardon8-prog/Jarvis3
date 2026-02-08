@@ -58,7 +58,8 @@ const io = setupSocketIO(httpServer, gateway);
 // Startup validation
 if (!config.oauthEncryptionKey) {
   if (process.env.NODE_ENV === "production") {
-    console.error("[Jarvis] FATAL: OAUTH_CREDENTIALS_ENCRYPTION_KEY is required in production");
+    console.error("[Jarvis] FATAL: OAUTH_CREDENTIALS_ENCRYPTION_KEY is required in production. Exiting.");
+    process.exit(1);
   } else {
     console.warn("[Jarvis] WARNING: OAUTH_CREDENTIALS_ENCRYPTION_KEY not set — using dev fallback from JWT_SECRET");
   }

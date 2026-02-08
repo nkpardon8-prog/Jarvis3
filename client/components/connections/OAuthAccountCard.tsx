@@ -419,22 +419,37 @@ export function OAuthAccountCard({
             </div>
           </details>
 
-          <HudButton
-            variant="primary"
-            size="sm"
-            onClick={handleConnect}
-            disabled={connecting}
-            className="w-full"
-          >
-            {connecting ? (
-              <LoadingSpinner size="sm" />
-            ) : (
-              <>
-                <ExternalLink size={12} />
-                Connect {label}
-              </>
-            )}
-          </HudButton>
+          <div className="flex gap-2">
+            <HudButton
+              variant="primary"
+              size="sm"
+              onClick={handleConnect}
+              disabled={connecting || removingCreds}
+              className="flex-1"
+            >
+              {connecting ? (
+                <LoadingSpinner size="sm" />
+              ) : (
+                <>
+                  <ExternalLink size={12} />
+                  Connect {label}
+                </>
+              )}
+            </HudButton>
+            <HudButton
+              variant="danger"
+              size="sm"
+              onClick={handleDeleteCredentials}
+              disabled={connecting || removingCreds}
+              className="flex-none"
+            >
+              {removingCreds ? (
+                <LoadingSpinner size="sm" />
+              ) : (
+                <Trash2 size={12} />
+              )}
+            </HudButton>
+          </div>
         </div>
       )}
 
