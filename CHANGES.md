@@ -4,6 +4,28 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-07 — Strengthen CLAUDE.md commit and change-tracking rules
+
+**Author:** Omid (via Claude Code)
+**Commit:** Strengthen CLAUDE.md commit and change-tracking rules
+**Branch:** main
+
+**What changed:**
+- Rewrote the "Committing" section in CLAUDE.md to enforce a strict 5-step sequence where updating and staging `CHANGES.md` is step 3 — before `git commit` runs, not after
+- Upgraded "Change Tracking" heading from `(MANDATORY)` to `(MANDATORY — ZERO TOLERANCE)` with a pre-commit checklist (checkbox format) that agents must verify before every commit
+- Changed rule #2 from "append an entry after every commit" to "write the entry BEFORE running `git commit` and stage it with the other files"
+- Added step 5 to Session Start Checklist: "Read `CHANGES.md`" before writing any code
+- Added critical warning: forgetting CHANGES.md is an error that must be fixed immediately
+
+**Why:**
+- The previous wording said "append after every commit" which allowed agents to forget — the entry was a follow-up rather than part of the commit itself. This caused a missed CHANGES.md entry in commit d4a6308. The new wording makes it impossible to skip because the entry must be staged before `git commit` runs.
+
+**Files touched:**
+- `CLAUDE.md` — rewrote Committing section, Change Tracking section, Session Start Checklist
+- `CHANGES.md` — this entry
+
+---
+
 ## 2026-02-07 — Overhaul chat UX, skills UI, thinking indicator, and model selector
 
 **Author:** Omid (via Claude Code)

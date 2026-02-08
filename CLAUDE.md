@@ -398,10 +398,15 @@ If rebase conflicts arise, stop and ask the user — do NOT auto-resolve or forc
 
 ### Committing
 
-- Always `git pull origin main --rebase` before committing.
-- Stage specific files by name — **never use `git add .` or `git add -A`**. This prevents accidentally committing `.env`, `.db`, or other local files.
-- Write clear commit messages that describe the **why**, not just the what.
-- Never amend commits that have already been pushed.
+**Every single commit MUST follow this exact sequence. No shortcuts, no exceptions.**
+
+1. `git pull origin main --rebase` — sync before committing.
+2. Stage specific files by name — **never use `git add .` or `git add -A`**.
+3. **Update `CHANGES.md` BEFORE committing** — write the entry first, then stage `CHANGES.md` alongside the other files. The CHANGES.md entry is part of the commit, not a follow-up. See the "Change Tracking" section below for the required format.
+4. Write a clear commit message that describes the **why**, not just the what.
+5. Never amend commits that have already been pushed.
+
+**CRITICAL: If you forget to include `CHANGES.md` in a commit, you have made an error. Fix it immediately with a follow-up commit — do NOT let any commit exist without a corresponding CHANGES.md entry.**
 
 ### Pushing
 
@@ -448,22 +453,34 @@ If you encounter a merge conflict:
 
 ### Session Start Checklist
 
-Every new Claude Code session should begin with:
+Every new Claude Code session MUST begin with these steps in order:
 1. `git fetch origin` — see what's changed remotely
 2. `git status` — check for local uncommitted work
 3. `git pull origin main --rebase` — sync up (if on main)
 4. If on a feature branch: `git pull origin <branch> --rebase` to sync that too
+5. **Read `CHANGES.md`** — understand what changed recently before writing any code
 
-This ensures neither contributor's agent starts working on stale code.
+This ensures neither contributor's agent starts working on stale code or duplicates recent work.
 
-## Change Tracking (MANDATORY)
+## Change Tracking (MANDATORY — ZERO TOLERANCE)
+
+**`CHANGES.md` must be updated as part of every single commit.** Not after. Not in a follow-up. IN the same commit. This is the #1 most-violated rule — treat it as a hard blocker before running `git commit`.
 
 All changes are logged in **`CHANGES.md`** at the project root. This file is the shared context window for both contributors and their agents.
+
+### Pre-Commit Checklist (memorize this)
+
+Before EVERY `git commit`, verify:
+- [ ] `CHANGES.md` has a new entry at the top for this commit
+- [ ] `CHANGES.md` is staged (`git add CHANGES.md`)
+- [ ] The entry includes: date, author, commit message, branch, what changed, why, files touched
+
+If `CHANGES.md` is not staged, **STOP and add it.** Do not commit without it.
 
 ### Rules
 
 1. **Read `CHANGES.md` at the start of every session** — before writing any code, read the recent entries to understand what's changed.
-2. **Append an entry after every commit.** No exceptions. The entry goes at the top of the log (below the header), so the most recent change is always first.
+2. **Write the CHANGES.md entry BEFORE running `git commit`** and stage it with the other files. The entry is part of the commit itself, not a separate follow-up. No exceptions.
 3. **Entry format:**
 
 ```markdown
@@ -483,7 +500,9 @@ All changes are logged in **`CHANGES.md`** at the project root. This file is the
 - List of files added, modified, or deleted
 ```
 
+Note: For the commit hash, use the branch name and commit message in the entry. After committing, if you want to update with the actual hash, do so in the same push — but never skip the entry entirely.
+
 4. **Be specific** — don't write "updated stuff." Name the functions, components, routes, or patterns that changed.
 5. **Include the why** — future agents and contributors need to understand intent, not just diffs.
 6. **Link to the commit** — include the short hash so anyone can `git show` it for full detail.
-7. **This file is committed with every change** — it's part of the codebase, not separate. Include it in your staged files when committing.
+7. **This file is committed WITH every change** — it's part of the codebase, not separate. It MUST be in your staged files when committing.
