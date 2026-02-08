@@ -48,6 +48,51 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-08 — Per-user Google OAuth + Google Drive/Docs surface
+
+**Author:** Omid (via Claude Code)
+**Commit:** Per-user OAuth credentials, encrypted storage, Drive/Docs API, auth hardening
+**Branch:** oz/per-user-oauth
+
+**What changed:**
+- Added `OAuthCredential` Prisma model with `@@unique([userId, provider])` for per-user OAuth client credential storage (clientSecret encrypted via AES-256-GCM)
+- Created `server/src/services/crypto.service.ts` — AES-256-GCM encrypt/decrypt using dedicated `OAUTH_CREDENTIALS_ENCRYPTION_KEY` env var (falls back to JWT_SECRET derivation in dev with warning)
+- Removed hardcoded fallback user from `authMiddleware` — now returns proper 401 instead of auto-assigning a fake user
+- Refactored `oauth.service.ts` with per-user credential resolution: DB credentials → legacy env var fallback (deprecated). All Google/Microsoft functions now async-resolve per-user credentials.
+- Added `getGoogleApiClient(userId)` — returns configured OAuth2 client with valid access token, used by email/calendar/drive routes
+- Encrypted refresh tokens: all `OAuthToken.refreshToken` values now stored encrypted, decrypted on read
+- Added proper Google token revocation via `https://oauth2.googleapis.com/revoke` endpoint before DB deletion
+- Added `storeUserOAuthCredentials()`, `deleteUserOAuthCredentials()` for per-user credential CRUD
+- Replaced gateway `patchConfig()` in OAuth routes with Prisma DB storage — OAuth credentials no longer stored in gateway config
+- Added `?deleteCredentials=true` query param to `POST /disconnect/:provider` for full credential removal
+- Updated `email.ts` and `calendar.ts` to use `getGoogleApiClient(userId)` instead of `new google.auth.OAuth2(config.googleClientId, ...)`
+- Created `server/src/routes/drive.ts` with 3 endpoints: `GET /api/drive/files` (list/filter), `GET /api/drive/search` (full-text), `GET /api/drive/docs/:docId` (read Google Doc content)
+- Added `oauthBaseUrl` and `oauthEncryptionKey` to `server/src/config.ts`
+- Removed OAuth hydration from gateway `connected` handler in `index.ts`; added startup validation warnings
+- Updated `OAuthAccountCard.tsx` with "Remove Credentials" button alongside "Disconnect" — disconnect keeps credentials for easy reconnect, remove deletes everything
+
+**Why:**
+- OAuth credentials were stored globally in the gateway config — all users shared one OAuth app, breaking multi-user isolation. Per-user DB storage with encryption fixes this.
+- The hardcoded fallback user in auth middleware was a security hole that bypassed authentication entirely.
+- Refresh tokens were stored in plaintext in the database.
+- Google Drive/Docs scopes were requested but no API endpoints existed to use them.
+- `revokeToken()` just deleted from DB without calling Google's actual revocation endpoint.
+
+**Files touched:**
+- `server/prisma/schema.prisma` — added `OAuthCredential` model + relation on `User`
+- `server/src/services/crypto.service.ts` — **new** — AES-256-GCM encrypt/decrypt
+- `server/src/middleware/auth.ts` — removed hardcoded fallback user, returns 401
+- `server/src/services/oauth.service.ts` — major refactor: per-user credential resolution, encrypted tokens, Google revocation, `getGoogleApiClient()`
+- `server/src/routes/oauth.ts` — replaced gateway patchConfig with Prisma storage, added `deleteCredentials` param
+- `server/src/routes/email.ts` — uses `getGoogleApiClient(userId)` instead of global config
+- `server/src/routes/calendar.ts` — uses `getGoogleApiClient(userId)` instead of global config
+- `server/src/routes/drive.ts` — **new** — Google Drive file list/search + Google Docs read
+- `server/src/config.ts` — added `oauthBaseUrl`, `oauthEncryptionKey`
+- `server/src/index.ts` — mounted drive routes, removed OAuth hydration, added startup checks
+- `client/components/connections/OAuthAccountCard.tsx` — added "Remove Credentials" button
+
+---
+
 ## 2026-02-07 — Add stage-based progress messages to chat thinking indicator
 
 **Author:** Omid (via Claude Code)
