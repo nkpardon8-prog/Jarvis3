@@ -47,7 +47,7 @@ export function ActiveModel({ models, health, sessions }: ActiveModelProps) {
         )}
 
         <Link
-          href="/dashboard/connections"
+          href="/dashboard/connections?focus=active-model"
           className="flex items-center gap-1 text-xs text-hud-accent hover:text-hud-accent/80 transition-colors mt-2"
         >
           Change model <ArrowRight size={12} />

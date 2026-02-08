@@ -10,15 +10,15 @@ import { MessageSquare } from "lucide-react";
 interface ChatMessagesProps {
   messages: ChatMessageType[];
   streamingText: string;
-  isThinking: boolean;
   isStreaming: boolean;
+  awaitingResponse: boolean;
 }
 
 export function ChatMessages({
   messages,
   streamingText,
-  isThinking,
   isStreaming,
+  awaitingResponse,
 }: ChatMessagesProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -28,9 +28,9 @@ export function ChatMessages({
     if (scrollRef.current) {
       scrollRef.current.scrollIntoView({ behavior: "smooth" });
     }
-  }, [messages, streamingText, isThinking]);
+  }, [messages, streamingText, awaitingResponse]);
 
-  if (messages.length === 0 && !isThinking && !isStreaming) {
+  if (messages.length === 0 && !awaitingResponse && !isStreaming) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <div className="text-center">
@@ -58,7 +58,7 @@ export function ChatMessages({
         <ChatMessage key={msg.id} message={msg} />
       ))}
 
-      {isThinking && !isStreaming && <ThinkingIndicator />}
+      {awaitingResponse && !isStreaming && <ThinkingIndicator />}
 
       {isStreaming && streamingText && <ChatTokenStream text={streamingText} />}
 

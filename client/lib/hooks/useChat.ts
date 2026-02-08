@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { useSocket } from "@/lib/hooks/useSocket";
 import { api } from "@/lib/api";
+import { consumeAutoPrompt } from "@/lib/skill-prompts";
 
 export interface ChatMessage {
   id: string;
@@ -26,6 +27,7 @@ interface UseChatReturn {
   streamingText: string;
   isThinking: boolean;
   isStreaming: boolean;
+  awaitingResponse: boolean;
   sessions: ChatSession[];
   currentSessionKey: string;
   sendMessage: (message: string) => void;
@@ -36,10 +38,16 @@ interface UseChatReturn {
   error: string | null;
 }
 
-// Extract plain text from OpenClaw message content which can be:
-// - a plain string
-// - an array of {type: "text", text: "..."} / {type: "thinking", ...} objects
-// - an object with {type, text} keys
+/** Polling intervals */
+const FAST_POLL_MS = 500;
+const IDLE_POLL_MS = 15000;
+
+/**
+ * Extract plain text from OpenClaw message content which can be:
+ * - a plain string
+ * - an array of {type: "text", text: "..."} / {type: "thinking", ...} objects
+ * - an object with {type, text} keys
+ */
 function extractTextContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
@@ -56,17 +64,127 @@ function extractTextContent(content: unknown): string {
   return "";
 }
 
+/** Normalize raw gateway history messages into display-ready ChatMessage[] */
+function normalizeHistory(raw: any[], sessionKey: string): ChatMessage[] {
+  const normalized: ChatMessage[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const msg = raw[i];
+    const role = msg.role;
+    if (role === "toolResult" || role === "tool") continue;
+    const text = extractTextContent(msg.content);
+    if (!text.trim()) continue;
+    const displayRole = role === "user" ? "user" : role === "system" ? "system" : "assistant";
+    normalized.push({
+      id: msg.id || `hist-${i}`,
+      role: displayRole,
+      content: text,
+      timestamp: msg.timestamp || msg.createdAt || new Date().toISOString(),
+      sessionKey,
+    });
+  }
+  return normalized;
+}
+
 export function useChat(): UseChatReturn {
   const { socket, connected } = useSocket();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streamingText, setStreamingText] = useState("");
   const [isThinking, setIsThinking] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [awaitingResponse, setAwaitingResponse] = useState(false);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionKey, setCurrentSessionKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const streamingRef = useRef("");
   const initializedRef = useRef(false);
+
+  // Refs for access inside interval/callback closures
+  const awaitingResponseRef = useRef(false);
+  const messagesRef = useRef<ChatMessage[]>([]);
+  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const knownIdsRef = useRef(new Set<string>());
+  const sessionKeyRef = useRef("");
+
+  // Keep refs in sync with state
+  useEffect(() => { sessionKeyRef.current = currentSessionKey; }, [currentSessionKey]);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+
+  /** Helper: mark response as received (clears awaiting + streaming state) */
+  const markResponseReceived = useCallback(() => {
+    awaitingResponseRef.current = false;
+    setAwaitingResponse(false);
+    setIsThinking(false);
+    setIsStreaming(false);
+    streamingRef.current = "";
+    setStreamingText("");
+  }, []);
+
+  /** Fetch history and reconcile against local state */
+  const pollHistory = useCallback(async () => {
+    const sessionKey = sessionKeyRef.current;
+    if (!sessionKey) return;
+
+    try {
+      const res = await api.get<any>(
+        `/chat/history/${encodeURIComponent(sessionKey)}?limit=100`
+      );
+      if (!res.ok || !res.data) return;
+
+      const raw = res.data.messages || (Array.isArray(res.data) ? res.data : []);
+      const normalized = normalizeHistory(raw, sessionKey);
+
+      // Count assistant messages in local vs history
+      const localAssistantCount = messagesRef.current.filter((m) => m.role === "assistant").length;
+      const historyAssistantCount = normalized.filter((m) => m.role === "assistant").length;
+
+      if (historyAssistantCount > localAssistantCount) {
+        // History has assistant message(s) we don't have — reconcile by replacing
+        console.log(
+          `[Chat] Poll reconcile: history has ${historyAssistantCount} assistant msgs, local has ${localAssistantCount}`
+        );
+
+        // Rebuild known IDs from history
+        knownIdsRef.current.clear();
+        for (const msg of normalized) {
+          if (msg.id) knownIdsRef.current.add(msg.id);
+        }
+
+        setMessages(normalized);
+
+        if (awaitingResponseRef.current) {
+          console.log("[Chat] Assistant reply detected via poll — clearing awaiting");
+          markResponseReceived();
+        }
+      }
+    } catch {
+      // Poll failure is non-critical
+    }
+  }, [markResponseReceived]);
+
+  /** Start polling at fast (in-flight) or idle rate */
+  const startPolling = useCallback(
+    (fast: boolean) => {
+      if (pollTimerRef.current) {
+        clearInterval(pollTimerRef.current);
+      }
+      const interval = fast ? FAST_POLL_MS : IDLE_POLL_MS;
+      pollTimerRef.current = setInterval(pollHistory, interval);
+    },
+    [pollHistory]
+  );
+
+  /** Stop all polling */
+  const stopPolling = useCallback(() => {
+    if (pollTimerRef.current) {
+      clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  }, []);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => stopPolling();
+  }, [stopPolling]);
 
   // Load default session key on mount
   useEffect(() => {
@@ -86,9 +204,13 @@ export function useChat(): UseChatReturn {
     initSession();
   }, []);
 
-  // Load history when session key changes
+  // Load history when session changes, then start idle polling
   useEffect(() => {
     if (!currentSessionKey) return;
+
+    knownIdsRef.current.clear();
+    awaitingResponseRef.current = false;
+    setAwaitingResponse(false);
 
     const loadHistory = async () => {
       try {
@@ -96,43 +218,31 @@ export function useChat(): UseChatReturn {
           `/chat/history/${encodeURIComponent(currentSessionKey)}?limit=100`
         );
         if (res.ok && res.data) {
-          const historyMessages = res.data.messages || (Array.isArray(res.data) ? res.data : []);
-          // Normalize the messages from gateway format, filtering out tool calls/results
-          const normalized: ChatMessage[] = [];
-          for (let i = 0; i < historyMessages.length; i++) {
-            const msg = historyMessages[i];
-            const role = msg.role;
-            // Skip tool calls and tool results — they're internal
-            if (role === "toolResult" || role === "tool") continue;
-            // For assistant messages, skip if it's only tool_use blocks with no text
-            const text = extractTextContent(msg.content);
-            if (!text.trim()) continue;
-            const displayRole = role === "user" ? "user" : role === "system" ? "system" : "assistant";
-            normalized.push({
-              id: msg.id || `hist-${i}`,
-              role: displayRole,
-              content: text,
-              timestamp: msg.timestamp || msg.createdAt || new Date().toISOString(),
-              sessionKey: currentSessionKey,
-            });
+          const raw = res.data.messages || (Array.isArray(res.data) ? res.data : []);
+          const normalized = normalizeHistory(raw, currentSessionKey);
+          for (const msg of normalized) {
+            if (msg.id) knownIdsRef.current.add(msg.id);
           }
           setMessages(normalized);
         }
       } catch {
-        // History might not be available for new sessions
         setMessages([]);
       }
+
+      startPolling(false);
     };
     loadHistory();
-  }, [currentSessionKey]);
+
+    return () => stopPolling();
+  }, [currentSessionKey, startPolling, stopPolling]);
 
   // Subscribe to socket events
   useEffect(() => {
     if (!socket) return;
 
     const handleToken = (payload: any) => {
-      // Delta events from OpenClaw contain the full accumulated text so far
-      // (not incremental tokens), so we replace rather than append
+      if (payload?.sessionKey && payload.sessionKey !== sessionKeyRef.current) return;
+
       const rawToken = payload?.token || payload?.text || payload?.content || "";
       const token = typeof rawToken === "string" ? rawToken : extractTextContent(rawToken);
       if (token) {
@@ -144,6 +254,8 @@ export function useChat(): UseChatReturn {
     };
 
     const handleStatus = (payload: any) => {
+      if (payload?.sessionKey && payload.sessionKey !== sessionKeyRef.current) return;
+
       if (payload?.status === "thinking") {
         setIsThinking(true);
         setIsStreaming(false);
@@ -152,44 +264,57 @@ export function useChat(): UseChatReturn {
       } else if (payload?.status === "idle") {
         setIsThinking(false);
         setIsStreaming(false);
+        // Do NOT clear awaitingResponse here — wait for actual message arrival.
+        // But trigger immediate poll to check for the response.
+        if (awaitingResponseRef.current) {
+          console.log("[Chat] Idle status while awaiting — immediate poll");
+          pollHistory();
+        }
       }
     };
 
     const handleMessage = (payload: any) => {
-      // Complete message received — finalize streaming
+      if (payload?.sessionKey && payload.sessionKey !== sessionKeyRef.current) return;
+
       const extracted = extractTextContent(payload?.content) || payload?.text || "";
       const content = extracted || streamingRef.current || "";
       if (content) {
-        const assistantMsg: ChatMessage = {
-          id: payload?.id || `msg-${Date.now()}`,
-          role: "assistant",
-          content,
-          timestamp: payload?.timestamp || new Date().toISOString(),
-          sessionKey: currentSessionKey,
-        };
-        setMessages((prev) => [...prev, assistantMsg]);
+        const id = payload?.id || `msg-${Date.now()}`;
+
+        // ID-based dedup: skip if already known
+        if (knownIdsRef.current.has(id)) {
+          console.log(`[Chat] Socket message deduped by ID: ${id}`);
+        } else {
+          // Cross-path dedup: check if last message has same content (poll delivered first)
+          const last = messagesRef.current[messagesRef.current.length - 1];
+          if (last?.role === "assistant" && last.content === content) {
+            console.log("[Chat] Socket message deduped by content (poll delivered first)");
+          } else {
+            knownIdsRef.current.add(id);
+            const assistantMsg: ChatMessage = {
+              id,
+              role: "assistant",
+              content,
+              timestamp: payload?.timestamp || new Date().toISOString(),
+              sessionKey: sessionKeyRef.current,
+            };
+            setMessages((prev) => [...prev, assistantMsg]);
+          }
+        }
       }
 
-      // Clear streaming state
-      streamingRef.current = "";
-      setStreamingText("");
-      setIsStreaming(false);
-      setIsThinking(false);
+      markResponseReceived();
+      startPolling(false);
     };
 
     const handleSessionState = (payload: any) => {
-      // Session state updates (e.g., title changes)
       console.log("[Chat] Session state update:", payload);
     };
 
     const handleError = (payload: any) => {
       setError(payload?.error || "An error occurred");
-      setIsThinking(false);
-      setIsStreaming(false);
-      streamingRef.current = "";
-      setStreamingText("");
-
-      // Clear error after 5s
+      markResponseReceived();
+      startPolling(false);
       setTimeout(() => setError(null), 5000);
     };
 
@@ -206,13 +331,65 @@ export function useChat(): UseChatReturn {
       socket.off("chat:session-state", handleSessionState);
       socket.off("chat:error", handleError);
     };
-  }, [socket, currentSessionKey]);
+  }, [socket, pollHistory, startPolling, markResponseReceived]);
+
+  // Auto-prompt
+  const autoPromptHandled = useRef(false);
+  useEffect(() => {
+    if (autoPromptHandled.current) return;
+    if (!socket || !connected || !currentSessionKey) return;
+
+    const prompt = consumeAutoPrompt();
+    if (!prompt) {
+      autoPromptHandled.current = true;
+      return;
+    }
+
+    autoPromptHandled.current = true;
+
+    const doAutoSend = async () => {
+      try {
+        await api.post(`/chat/sessions/${encodeURIComponent(currentSessionKey)}/reset`);
+        setMessages([]);
+        knownIdsRef.current.clear();
+        streamingRef.current = "";
+        setStreamingText("");
+      } catch {
+        // Reset failure is non-fatal
+      }
+
+      setTimeout(() => {
+        const userMsg: ChatMessage = {
+          id: `user-${Date.now()}`,
+          role: "user",
+          content: prompt.trim(),
+          timestamp: new Date().toISOString(),
+          sessionKey: currentSessionKey,
+        };
+        setMessages((prev) => [...prev, userMsg]);
+        setError(null);
+        streamingRef.current = "";
+        setStreamingText("");
+        setIsThinking(true);
+
+        awaitingResponseRef.current = true;
+        setAwaitingResponse(true);
+        startPolling(true);
+
+        socket.emit("chat:send", {
+          sessionKey: currentSessionKey,
+          message: prompt.trim(),
+        });
+      }, 300);
+    };
+
+    doAutoSend();
+  }, [socket, connected, currentSessionKey, startPolling]);
 
   const sendMessage = useCallback(
     (message: string) => {
       if (!socket || !connected || !currentSessionKey || !message.trim()) return;
 
-      // Add user message to the list immediately
       const userMsg: ChatMessage = {
         id: `user-${Date.now()}`,
         role: "user",
@@ -223,18 +400,21 @@ export function useChat(): UseChatReturn {
       setMessages((prev) => [...prev, userMsg]);
       setError(null);
 
-      // Reset streaming state
       streamingRef.current = "";
       setStreamingText("");
       setIsThinking(true);
 
-      // Emit to server
+      awaitingResponseRef.current = true;
+      setAwaitingResponse(true);
+      startPolling(true);
+      console.log("[Chat] Message sent, awaiting response");
+
       socket.emit("chat:send", {
         sessionKey: currentSessionKey,
         message: message.trim(),
       });
     },
-    [socket, connected, currentSessionKey]
+    [socket, connected, currentSessionKey, startPolling]
   );
 
   const abortMessage = useCallback(() => {
@@ -242,7 +422,6 @@ export function useChat(): UseChatReturn {
 
     socket.emit("chat:abort", { sessionKey: currentSessionKey });
 
-    // If there was partial streaming text, save it as a partial message
     if (streamingRef.current) {
       const partialMsg: ChatMessage = {
         id: `partial-${Date.now()}`,
@@ -254,29 +433,37 @@ export function useChat(): UseChatReturn {
       setMessages((prev) => [...prev, partialMsg]);
     }
 
-    streamingRef.current = "";
-    setStreamingText("");
-    setIsThinking(false);
-    setIsStreaming(false);
-  }, [socket, currentSessionKey]);
+    markResponseReceived();
+    startPolling(false);
+  }, [socket, currentSessionKey, startPolling, markResponseReceived]);
 
-  const switchSession = useCallback((sessionKey: string) => {
-    setCurrentSessionKey(sessionKey);
-    setMessages([]);
-    streamingRef.current = "";
-    setStreamingText("");
-    setIsThinking(false);
-    setIsStreaming(false);
-    setError(null);
-  }, []);
+  const switchSession = useCallback(
+    (sessionKey: string) => {
+      setCurrentSessionKey(sessionKey);
+      setMessages([]);
+      knownIdsRef.current.clear();
+      streamingRef.current = "";
+      setStreamingText("");
+      setIsThinking(false);
+      setIsStreaming(false);
+      awaitingResponseRef.current = false;
+      setAwaitingResponse(false);
+      setError(null);
+      stopPolling();
+    },
+    [stopPolling]
+  );
 
   const resetSession = useCallback(async () => {
     if (!currentSessionKey) return;
     try {
       await api.post(`/chat/sessions/${encodeURIComponent(currentSessionKey)}/reset`);
       setMessages([]);
+      knownIdsRef.current.clear();
       streamingRef.current = "";
       setStreamingText("");
+      awaitingResponseRef.current = false;
+      setAwaitingResponse(false);
     } catch {
       setError("Failed to reset session");
     }
@@ -309,6 +496,7 @@ export function useChat(): UseChatReturn {
     streamingText,
     isThinking,
     isStreaming,
+    awaitingResponse,
     sessions,
     currentSessionKey,
     sendMessage,

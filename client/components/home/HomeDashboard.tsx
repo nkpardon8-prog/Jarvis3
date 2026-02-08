@@ -62,7 +62,7 @@ export function HomeDashboard() {
       {/* Bottom row — channels + skills + sessions */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         <ChannelStatus health={data?.health} channels={data?.channels} />
-        <SkillsSummary skills={data?.skills} />
+        <SkillsSummary skills={data?.skills} skillsCounts={data?.skillsCounts} />
         <RecentSessions sessions={data?.sessions} />
       </div>
     </div>

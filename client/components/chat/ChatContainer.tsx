@@ -13,8 +13,8 @@ export function ChatContainer() {
   const {
     messages,
     streamingText,
-    isThinking,
     isStreaming,
+    awaitingResponse,
     sessions,
     currentSessionKey,
     sendMessage,
@@ -27,7 +27,7 @@ export function ChatContainer() {
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  const isProcessing = isThinking || isStreaming;
+  const isProcessing = awaitingResponse || isStreaming;
 
   return (
     <div className="flex h-full overflow-hidden rounded-xl border border-hud-border bg-hud-bg-primary/30">
@@ -98,8 +98,8 @@ export function ChatContainer() {
         <ChatMessages
           messages={messages}
           streamingText={streamingText}
-          isThinking={isThinking}
           isStreaming={isStreaming}
+          awaitingResponse={awaitingResponse}
         />
 
         {/* Input bar */}

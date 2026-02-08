@@ -6,12 +6,31 @@ import Link from "next/link";
 
 interface SkillsSummaryProps {
   skills: any;
+  skillsCounts?: { total: number; active: number; inactive: number } | null;
 }
 
-export function SkillsSummary({ skills }: SkillsSummaryProps) {
-  const skillsList = skills?.skills || skills?.installed || [];
-  const total = Array.isArray(skillsList) ? skillsList.length : 0;
-  const enabled = Array.isArray(skillsList) ? skillsList.filter((s: any) => s.enabled !== false).length : 0;
+export function SkillsSummary({ skills, skillsCounts }: SkillsSummaryProps) {
+  // Prefer pre-computed counts from dashboard or skills endpoint
+  const serverCounts = skillsCounts || skills?.counts;
+
+  let total: number;
+  let active: number;
+  let inactive: number;
+
+  if (serverCounts) {
+    total = serverCounts.total || 0;
+    active = serverCounts.active || 0;
+    inactive = serverCounts.inactive || 0;
+  } else {
+    // Fallback: compute from raw skill list
+    const skillsList = skills?.skills || skills?.installed || [];
+    const list = Array.isArray(skillsList) ? skillsList : [];
+    total = list.length;
+    active = list.filter(
+      (s: any) => s.enabled !== false && s.eligible !== false
+    ).length;
+    inactive = total - active;
+  }
 
   return (
     <GlassPanel>
@@ -26,15 +45,21 @@ export function SkillsSummary({ skills }: SkillsSummaryProps) {
       </div>
 
       <div className="space-y-3">
-        <div className="grid grid-cols-2 gap-2">
+        <div className={`grid ${inactive > 0 ? "grid-cols-3" : "grid-cols-2"} gap-2`}>
           <div className="text-center px-3 py-2 bg-white/3 rounded-lg">
             <p className="text-lg font-bold text-hud-text">{total}</p>
             <p className="text-[10px] text-hud-text-muted">Installed</p>
           </div>
           <div className="text-center px-3 py-2 bg-white/3 rounded-lg">
-            <p className="text-lg font-bold text-hud-success">{enabled}</p>
+            <p className="text-lg font-bold text-hud-success">{active}</p>
             <p className="text-[10px] text-hud-text-muted">Active</p>
           </div>
+          {inactive > 0 && (
+            <div className="text-center px-3 py-2 bg-white/3 rounded-lg">
+              <p className="text-lg font-bold text-hud-text-muted">{inactive}</p>
+              <p className="text-[10px] text-hud-text-muted">Inactive</p>
+            </div>
+          )}
         </div>
 
         <Link

@@ -96,3 +96,118 @@ input:focus, textarea:focus, select:focus {
   border-color: rgba(0, 212, 255, 0.4) !important;
   box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.1);
 }
+
+/* --- Thinking indicator animations --- */
+
+/* Card fade-in */
+.thinking-card {
+  animation: thinking-fade-in 0.3s ease-out;
+}
+
+@keyframes thinking-fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Shimmer sweep across card */
+.thinking-shimmer {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(0, 212, 255, 0.04) 40%,
+    rgba(0, 212, 255, 0.08) 50%,
+    rgba(0, 212, 255, 0.04) 60%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: thinking-shimmer-sweep 2.5s ease-in-out infinite;
+}
+
+@keyframes thinking-shimmer-sweep {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Outer ring — slow clockwise spin */
+.thinking-ring-outer {
+  border-color: transparent;
+  border-top-color: rgba(0, 212, 255, 0.3);
+  border-right-color: rgba(0, 212, 255, 0.15);
+  animation: thinking-spin 3s linear infinite;
+}
+
+/* Inner ring — faster counter-clockwise */
+.thinking-ring-inner {
+  border-color: transparent;
+  border-bottom-color: rgba(0, 212, 255, 0.4);
+  border-left-color: rgba(0, 212, 255, 0.2);
+  animation: thinking-spin-reverse 2s linear infinite;
+}
+
+@keyframes thinking-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes thinking-spin-reverse {
+  to { transform: rotate(-360deg); }
+}
+
+/* Core pulse */
+.thinking-pulse {
+  animation: thinking-core-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes thinking-core-pulse {
+  0%, 100% { opacity: 0.4; transform: scale(1); }
+  50% { opacity: 0.8; transform: scale(1.15); }
+}
+
+/* Text cross-fade on message rotate */
+.thinking-text-fade {
+  animation: thinking-text-fade 1.5s ease-in-out;
+}
+
+@keyframes thinking-text-fade {
+  0% { opacity: 0; transform: translateY(4px); }
+  20% { opacity: 1; transform: translateY(0); }
+}
+
+/* Respect reduced-motion preference */
+@media (prefers-reduced-motion: reduce) {
+  .thinking-card,
+  .thinking-shimmer,
+  .thinking-ring-outer,
+  .thinking-ring-inner,
+  .thinking-pulse,
+  .thinking-text-fade {
+    animation: none;
+  }
+  .thinking-shimmer {
+    background: transparent;
+  }
+}
+
+/* --- Focus highlight for scroll-to targets --- */
+
+.focus-highlight {
+  animation: focus-highlight-pulse 2s ease-out forwards;
+}
+
+@keyframes focus-highlight-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(0, 212, 255, 0.4), 0 0 20px rgba(0, 212, 255, 0.15);
+  }
+  30% {
+    box-shadow: 0 0 0 4px rgba(0, 212, 255, 0.25), 0 0 30px rgba(0, 212, 255, 0.2);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(0, 212, 255, 0), 0 0 0 rgba(0, 212, 255, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .focus-highlight {
+    animation: none;
+    box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.3);
+  }
+}

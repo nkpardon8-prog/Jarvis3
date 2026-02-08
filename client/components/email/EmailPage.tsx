@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { TagManager } from "./TagManager";
+import { HudToggle } from "@/components/ui/HudToggle";
 import {
   Mail,
   Tag,
@@ -221,24 +222,12 @@ export function EmailPage() {
                 </p>
               </div>
             </div>
-            <button
-              onClick={() =>
-                updateSettings.mutate({
-                  autoTagEnabled: !settings.autoTagEnabled,
-                })
-              }
-              className={`relative w-11 h-6 rounded-full transition-colors ${
-                settings.autoTagEnabled ? "bg-hud-accent" : "bg-hud-border"
-              }`}
-            >
-              <span
-                className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
-                  settings.autoTagEnabled
-                    ? "translate-x-5"
-                    : "translate-x-0.5"
-                }`}
-              />
-            </button>
+            <HudToggle
+              checked={!!settings.autoTagEnabled}
+              onChange={(checked) => updateSettings.mutate({ autoTagEnabled: checked })}
+              size="md"
+              label="Auto-tagging"
+            />
           </div>
         </GlassPanel>
 
@@ -255,24 +244,13 @@ export function EmailPage() {
                 </p>
               </div>
             </div>
-            <button
-              onClick={() =>
-                updateSettings.mutate({
-                  autoDraftEnabled: !settings.autoDraftEnabled,
-                })
-              }
-              className={`relative w-11 h-6 rounded-full transition-colors ${
-                settings.autoDraftEnabled ? "bg-hud-success" : "bg-hud-border"
-              }`}
-            >
-              <span
-                className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
-                  settings.autoDraftEnabled
-                    ? "translate-x-5"
-                    : "translate-x-0.5"
-                }`}
-              />
-            </button>
+            <HudToggle
+              checked={!!settings.autoDraftEnabled}
+              onChange={(checked) => updateSettings.mutate({ autoDraftEnabled: checked })}
+              size="md"
+              activeColor="success"
+              label="Auto-drafting"
+            />
           </div>
         </GlassPanel>
       </div>

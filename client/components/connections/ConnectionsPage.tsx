@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "next/navigation";
 import { api } from "@/lib/api";
@@ -173,6 +173,8 @@ export function ConnectionsPage() {
   const searchParams = useSearchParams();
   const [oauthMessage, setOauthMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [suggestionsSlug, setSuggestionsSlug] = useState<string | null>(null);
+  const activeModelRef = useRef<HTMLDivElement>(null);
+  const focusHandledRef = useRef(false);
 
   // Handle OAuth callback query params
   useEffect(() => {
@@ -203,6 +205,39 @@ export function ConnectionsPage() {
       return () => clearTimeout(timer);
     }
   }, [oauthMessage]);
+
+  // Scroll to Active Model section when navigated with ?focus=active-model
+  const scrollToActiveModel = useCallback(() => {
+    if (!activeModelRef.current) return false;
+    activeModelRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    activeModelRef.current.classList.add("focus-highlight");
+    const timer = setTimeout(() => {
+      activeModelRef.current?.classList.remove("focus-highlight");
+    }, 2000);
+    // Clean URL param
+    window.history.replaceState({}, "", window.location.pathname);
+    return () => clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (focusHandledRef.current) return;
+    if (searchParams.get("focus") !== "active-model") return;
+
+    focusHandledRef.current = true;
+
+    // Retry until the ref is mounted (handles data-loading delay)
+    let attempts = 0;
+    const tryScroll = () => {
+      if (activeModelRef.current) {
+        scrollToActiveModel();
+      } else if (attempts < 20) {
+        attempts++;
+        setTimeout(tryScroll, 100);
+      }
+    };
+    // Small initial delay for route transition render
+    setTimeout(tryScroll, 150);
+  }, [searchParams, scrollToActiveModel]);
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ["connections-status"],
@@ -345,33 +380,35 @@ export function ConnectionsPage() {
       </section>
 
       {/* Active model selector */}
-      <GlassPanel className="border-hud-accent/30">
-        <div className="flex items-center gap-3 mb-4">
-          <div className="p-2 rounded-lg bg-hud-accent/20">
-            <Brain size={20} className="text-hud-accent" />
+      <div ref={activeModelRef} className="rounded-xl transition-shadow duration-500">
+        <GlassPanel className="border-hud-accent/30">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="p-2 rounded-lg bg-hud-accent/20">
+              <Brain size={20} className="text-hud-accent" />
+            </div>
+            <div className="flex-1">
+              <h3 className="text-sm font-semibold text-hud-text">Active Model</h3>
+              <p className="text-xs text-hud-text-muted">
+                Currently using: <span className="text-hud-accent font-medium">{currentModel || "None"}</span>
+              </p>
+            </div>
+            {setModelMutation.isPending && <LoadingSpinner size="sm" />}
           </div>
-          <div className="flex-1">
-            <h3 className="text-sm font-semibold text-hud-text">Active Model</h3>
-            <p className="text-xs text-hud-text-muted">
-              Currently using: <span className="text-hud-accent font-medium">{currentModel || "None"}</span>
-            </p>
-          </div>
-          {setModelMutation.isPending && <LoadingSpinner size="sm" />}
-        </div>
 
-        <ModelDropdown
-          currentModel={currentModel}
-          onSelect={(model) => setModelMutation.mutate(model)}
-          disabled={setModelMutation.isPending}
-        />
+          <ModelDropdown
+            currentModel={currentModel}
+            onSelect={(model) => setModelMutation.mutate(model)}
+            disabled={setModelMutation.isPending}
+          />
 
-        {setModelMutation.isError && (
-          <p className="text-xs text-hud-error mt-2">{(setModelMutation.error as Error).message}</p>
-        )}
-        {setModelMutation.isSuccess && (
-          <p className="text-xs text-hud-success mt-2">Model updated</p>
-        )}
-      </GlassPanel>
+          {setModelMutation.isError && (
+            <p className="text-xs text-hud-error mt-2">{(setModelMutation.error as Error).message}</p>
+          )}
+          {setModelMutation.isSuccess && (
+            <p className="text-xs text-hud-success mt-2">Model updated</p>
+          )}
+        </GlassPanel>
+      </div>
 
       {/* LLM Providers — API keys */}
       <section>
@@ -516,10 +553,10 @@ function ModelDropdown({
       </button>
 
       {open && (
-        <div className="absolute z-50 mt-1 w-full max-h-80 overflow-y-auto bg-hud-bg-primary border border-hud-border rounded-xl shadow-2xl scrollbar-thin">
+        <div className="absolute z-50 mt-1 w-full max-h-80 overflow-y-auto bg-hud-bg border border-hud-border rounded-xl shadow-2xl backdrop-blur-xl scrollbar-thin">
           {Object.entries(PROVIDER_MODELS).map(([providerId, models]) => (
             <div key={providerId}>
-              <div className="px-4 py-1.5 text-[10px] font-bold text-hud-text-muted uppercase tracking-wider bg-white/3 sticky top-0">
+              <div className="px-4 py-1.5 text-[10px] font-bold text-hud-text-muted uppercase tracking-wider bg-hud-surface sticky top-0">
                 {providerId}
               </div>
               {models.map((model) => {

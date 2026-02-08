@@ -2,27 +2,56 @@ import { Server, Socket } from "socket.io";
 import { randomUUID } from "crypto";
 import { OpenClawGateway } from "../gateway/connection";
 
+/**
+ * Extract text from various OpenClaw content formats:
+ * - string
+ * - array of { type: "text", text: "..." } blocks
+ * - object with .text or .content string
+ */
+function extractText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((b: any) => b?.type === "text" && typeof b?.text === "string")
+      .map((b: any) => b.text)
+      .join("\n");
+  }
+  if (content && typeof content === "object") {
+    const obj = content as Record<string, unknown>;
+    if (typeof obj.text === "string") return obj.text;
+    if (typeof obj.content === "string") return obj.content;
+  }
+  return "";
+}
+
+/**
+ * Try multiple payload shapes to find text content.
+ * Gateway payloads vary: message.content, content, text, message.text, etc.
+ */
+function extractMessageText(payload: any): string {
+  return (
+    extractText(payload?.message?.content) ||
+    extractText(payload?.content) ||
+    (typeof payload?.text === "string" ? payload.text : "") ||
+    (typeof payload?.message?.text === "string" ? payload.message.text : "")
+  );
+}
+
 export function registerChatHandlers(io: Server, gateway: OpenClawGateway) {
-  // OpenClaw uses a single "chat" event with a state field:
+  // Track active runs so we can detect when the RPC response IS the final answer
+  const activeRuns = new Set<string>();
+
+  // OpenClaw emits "chat" events with a state field:
   //   state: "delta" | "final" | "error" | "aborted"
-  // Payload: { runId, sessionKey, seq, state, message?, errorMessage?, stopReason? }
   gateway.onEvent("chat", (payload: any) => {
     const state = payload?.state;
+    const runId = payload?.runId;
+    console.log(`[Chat] Gateway event: state=${state || "none"}, runId=${runId || "?"}, session=${payload?.sessionKey || "?"}`);
 
     if (state === "delta") {
-      // Streaming token — extract text from message.content array
-      const content = payload?.message?.content;
-      let text = "";
-      if (Array.isArray(content)) {
-        const textBlock = content.find((b: any) => b?.type === "text");
-        if (textBlock?.text) {
-          text = textBlock.text;
-        }
-      } else if (typeof content === "string") {
-        text = content;
-      }
-
+      const text = extractMessageText(payload);
       if (text) {
+        activeRuns.add(payload.runId);
         io.emit("chat:token", {
           token: text,
           runId: payload.runId,
@@ -31,17 +60,9 @@ export function registerChatHandlers(io: Server, gateway: OpenClawGateway) {
         });
       }
     } else if (state === "final") {
-      // Message complete
-      const content = payload?.message?.content;
-      let text = "";
-      if (Array.isArray(content)) {
-        text = content
-          .filter((b: any) => b?.type === "text")
-          .map((b: any) => b.text)
-          .join("\n");
-      } else if (typeof content === "string") {
-        text = content;
-      }
+      const text = extractMessageText(payload);
+      activeRuns.delete(payload.runId);
+      console.log(`[Chat] Final message: ${text ? text.slice(0, 80) + "..." : "(empty)"}`);
 
       io.emit("chat:message", {
         id: payload.runId || `msg-${Date.now()}`,
@@ -55,23 +76,41 @@ export function registerChatHandlers(io: Server, gateway: OpenClawGateway) {
 
       io.emit("chat:status", { status: "idle", sessionKey: payload.sessionKey });
     } else if (state === "error") {
+      activeRuns.delete(payload.runId);
+      console.log(`[Chat] Run error: ${payload?.errorMessage || "unknown"}`);
       io.emit("chat:error", {
         error: payload?.errorMessage || "Agent error",
         sessionKey: payload.sessionKey,
       });
       io.emit("chat:status", { status: "idle", sessionKey: payload.sessionKey });
     } else if (state === "aborted") {
+      activeRuns.delete(payload.runId);
       io.emit("chat:status", {
         status: "idle",
         aborted: true,
         sessionKey: payload.sessionKey,
       });
+    } else if (!state) {
+      // Fallback: no state field — treat as final if there's text content
+      const text = extractMessageText(payload);
+      if (text) {
+        console.log(`[Chat] No-state fallback message: ${text.slice(0, 80)}...`);
+        io.emit("chat:message", {
+          id: payload.runId || payload.id || `msg-${Date.now()}`,
+          content: text,
+          role: "assistant",
+          timestamp: new Date().toISOString(),
+          sessionKey: payload.sessionKey,
+        });
+        io.emit("chat:status", { status: "idle", sessionKey: payload.sessionKey });
+      }
     }
   });
 
   // Agent events (run start/end)
   gateway.onEvent("agent", (payload: any) => {
     const state = payload?.state;
+    console.log(`[Chat] Agent event: state=${state}, session=${payload?.sessionKey || "?"}`);
     if (state === "running" || state === "thinking") {
       io.emit("chat:status", { status: "thinking", sessionKey: payload.sessionKey });
     } else if (state === "idle" || state === "done") {
@@ -93,18 +132,42 @@ export function registerChatHandlers(io: Server, gateway: OpenClawGateway) {
         }
 
         const idempotencyKey = randomUUID();
+        console.log(`[Chat] Sending to gateway: session=${sessionKey}, idempotency=${idempotencyKey.slice(0, 8)}`);
 
         // Emit thinking status immediately
         io.emit("chat:status", { status: "thinking", sessionKey });
 
-        // Send to gateway
-        // deliver: true means deliver events (streaming), false means wait for full response
-        await gateway.send("chat.send", {
+        // Send to gateway — deliver: true requests event-based streaming.
+        // The RPC response may be just { runId, status } or may contain the full answer.
+        const result = await gateway.send("chat.send", {
           sessionKey,
           message,
           deliver: true,
           idempotencyKey,
-        }, 120000);
+        }, 120000) as any;
+
+        console.log(`[Chat] RPC response: status=${result?.status}, runId=${result?.runId || "?"}`);
+
+        // Fallback: if the RPC response itself contains the assistant message
+        // (happens when gateway returns the full response inline instead of via events)
+        if (result) {
+          const runId = result.runId || idempotencyKey;
+          // Only emit if the event handler didn't already handle this run
+          if (!activeRuns.has(runId) && result.status !== "started" && result.status !== "in_flight") {
+            const text = extractMessageText(result);
+            if (text) {
+              console.log(`[Chat] RPC fallback message: ${text.slice(0, 80)}...`);
+              io.emit("chat:message", {
+                id: runId,
+                content: text,
+                role: "assistant",
+                timestamp: new Date().toISOString(),
+                sessionKey,
+              });
+              io.emit("chat:status", { status: "idle", sessionKey });
+            }
+          }
+        }
       } catch (err: any) {
         console.error("[Socket] Chat send error:", err.message);
         socket.emit("chat:error", { error: err.message });

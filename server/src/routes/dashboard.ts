@@ -7,6 +7,26 @@ const router = Router();
 
 router.use(authMiddleware);
 
+// Compute skill counts from raw gateway data (active/inactive model)
+function computeSkillsCounts(raw: any) {
+  const list: any[] = Array.isArray(raw)
+    ? raw
+    : Array.isArray(raw?.skills)
+      ? raw.skills
+      : Array.isArray(raw?.installed)
+        ? raw.installed
+        : [];
+
+  const counts = { total: 0, active: 0, inactive: 0 };
+  for (const s of list) {
+    counts.total++;
+    const isActive = s.enabled !== false && s.eligible !== false;
+    if (isActive) counts.active++;
+    else counts.inactive++;
+  }
+  return counts;
+}
+
 // Aggregated dashboard status
 router.get("/status", async (_req: AuthRequest, res: Response) => {
   try {
@@ -32,6 +52,8 @@ router.get("/status", async (_req: AuthRequest, res: Response) => {
     const skills = extract(results[5]) as any;
     const usage = extract(results[6]) as any;
 
+    const skillsCounts = skills ? computeSkillsCounts(skills) : null;
+
     res.json({
       ok: true,
       data: {
@@ -47,6 +69,7 @@ router.get("/status", async (_req: AuthRequest, res: Response) => {
         cron,
         sessions,
         skills,
+        skillsCounts,
         usage,
       },
     });
