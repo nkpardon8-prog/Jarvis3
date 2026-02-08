@@ -43,25 +43,33 @@ interface UseChatReturn {
 /** Polling intervals */
 const FAST_POLL_MS = 500;
 const IDLE_POLL_MS = 15000;
+const SAFETY_TIMEOUT_MS = 30000;
 
 /**
  * Extract plain text from OpenClaw message content which can be:
  * - a plain string
- * - an array of {type: "text", text: "..."} / {type: "thinking", ...} objects
- * - an object with {type, text} keys
+ * - an array of content blocks (text, output_text, markdown, etc.)
+ * - an object with text, content, value, or delta keys
  */
 function extractTextContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
     return content
-      .filter((block: any) => block?.type === "text" && typeof block?.text === "string")
-      .map((block: any) => block.text)
+      .filter((block: any) => {
+        if (!block || typeof block !== "object") return false;
+        if (typeof block.text === "string") return true;
+        if (typeof block.value === "string") return true;
+        return false;
+      })
+      .map((block: any) => block.text || block.value || "")
       .join("\n");
   }
   if (content && typeof content === "object") {
     const obj = content as Record<string, unknown>;
     if (typeof obj.text === "string") return obj.text;
     if (typeof obj.content === "string") return obj.content;
+    if (typeof obj.value === "string") return obj.value;
+    if (typeof obj.delta === "string") return obj.delta;
   }
   return "";
 }
@@ -72,7 +80,7 @@ function normalizeHistory(raw: any[], sessionKey: string): ChatMessage[] {
   for (let i = 0; i < raw.length; i++) {
     const msg = raw[i];
     const role = msg.role;
-    if (role === "toolResult" || role === "tool") continue;
+    if (role === "toolResult" || role === "tool" || role === "tool_use" || role === "tool_result") continue;
     const text = extractTextContent(msg.content);
     if (!text.trim()) continue;
     const displayRole = role === "user" ? "user" : role === "system" ? "system" : "assistant";
@@ -105,6 +113,7 @@ export function useChat(): UseChatReturn {
   const awaitingResponseRef = useRef(false);
   const messagesRef = useRef<ChatMessage[]>([]);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const safetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const knownIdsRef = useRef(new Set<string>());
   const sessionKeyRef = useRef("");
 
@@ -121,6 +130,10 @@ export function useChat(): UseChatReturn {
     setIsStreaming(false);
     streamingRef.current = "";
     setStreamingText("");
+    if (safetyTimerRef.current) {
+      clearTimeout(safetyTimerRef.current);
+      safetyTimerRef.current = null;
+    }
   }, []);
 
   /** Fetch history and reconcile against local state */
@@ -137,25 +150,25 @@ export function useChat(): UseChatReturn {
       const raw = res.data.messages || (Array.isArray(res.data) ? res.data : []);
       const normalized = normalizeHistory(raw, sessionKey);
 
-      // Count assistant messages in local vs history
+      // Check if history has messages not in our known set
+      const localIds = knownIdsRef.current;
+      const historyIds = new Set(normalized.map((m) => m.id).filter(Boolean));
+      const hasNewMessages = normalized.some((m) => m.id && !localIds.has(m.id));
+
+      // Also compare assistant counts as a secondary signal
       const localAssistantCount = messagesRef.current.filter((m) => m.role === "assistant").length;
       const historyAssistantCount = normalized.filter((m) => m.role === "assistant").length;
 
-      if (historyAssistantCount > localAssistantCount) {
-        // History has assistant message(s) we don't have — reconcile by replacing
+      if (hasNewMessages || historyAssistantCount > localAssistantCount) {
         console.log(
-          `[Chat] Poll reconcile: history has ${historyAssistantCount} assistant msgs, local has ${localAssistantCount}`
+          `[Chat] Poll reconcile: newIDs=${hasNewMessages}, histAssistant=${historyAssistantCount}, localAssistant=${localAssistantCount}`
         );
 
         // Rebuild known IDs from history
-        knownIdsRef.current.clear();
-        for (const msg of normalized) {
-          if (msg.id) knownIdsRef.current.add(msg.id);
-        }
-
+        knownIdsRef.current = historyIds;
         setMessages(normalized);
 
-        if (awaitingResponseRef.current) {
+        if (awaitingResponseRef.current && historyAssistantCount > localAssistantCount) {
           console.log("[Chat] Assistant reply detected via poll — clearing awaiting");
           markResponseReceived();
         }
@@ -185,9 +198,27 @@ export function useChat(): UseChatReturn {
     }
   }, []);
 
+  /** Safety timeout: if still awaiting after N seconds, force history sync */
+  const startSafetyTimeout = useCallback(() => {
+    if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current);
+    safetyTimerRef.current = setTimeout(async () => {
+      safetyTimerRef.current = null;
+      if (!awaitingResponseRef.current) return;
+      console.log("[Chat] Safety timeout — forcing history sync");
+      await pollHistory();
+      // If still awaiting after forced poll, show a non-fatal warning
+      if (awaitingResponseRef.current) {
+        console.log("[Chat] Still no response after safety timeout — continuing to poll");
+      }
+    }, SAFETY_TIMEOUT_MS);
+  }, [pollHistory]);
+
   // Cleanup on unmount
   useEffect(() => {
-    return () => stopPolling();
+    return () => {
+      stopPolling();
+      if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current);
+    };
   }, [stopPolling]);
 
   // Load default session key on mount
@@ -381,6 +412,7 @@ export function useChat(): UseChatReturn {
         setAwaitingResponse(true);
         if (ctx) setActionContext(ctx);
         startPolling(true);
+        startSafetyTimeout();
 
         socket.emit("chat:send", {
           sessionKey: currentSessionKey,
@@ -390,7 +422,7 @@ export function useChat(): UseChatReturn {
     };
 
     doAutoSend();
-  }, [socket, connected, currentSessionKey, startPolling]);
+  }, [socket, connected, currentSessionKey, startPolling, startSafetyTimeout]);
 
   const sendMessage = useCallback(
     (message: string) => {
@@ -413,6 +445,7 @@ export function useChat(): UseChatReturn {
       awaitingResponseRef.current = true;
       setAwaitingResponse(true);
       startPolling(true);
+      startSafetyTimeout();
       console.log("[Chat] Message sent, awaiting response");
 
       socket.emit("chat:send", {
@@ -420,7 +453,7 @@ export function useChat(): UseChatReturn {
         message: message.trim(),
       });
     },
-    [socket, connected, currentSessionKey, startPolling]
+    [socket, connected, currentSessionKey, startPolling, startSafetyTimeout]
   );
 
   const abortMessage = useCallback(() => {

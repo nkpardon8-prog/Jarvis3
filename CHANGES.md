@@ -4,6 +4,31 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-07 — Fix chat regression: harden content extraction, reconciliation, and recovery
+
+**Author:** Omid (via Claude Code)
+**Commit:** Fix chat regression: harden content extraction, reconciliation, and recovery
+**Branch:** main
+
+**What changed:**
+- **Server `extractText`**: Broadened from `type === "text"` only to accept `output_text`, `markdown`, `code`, `result` block types, plus any block with a `text` or `value` string field
+- **Server `extractMessageText`**: Added fallback checks for `output`, `delta`, and raw `message` object extraction
+- **Server system event handling**: Added `gateway.onEvent("system", ...)` to detect GatewayRestart events and clear stale `activeRuns` + emit idle status so clients recover
+- **Server reconnect cleanup**: Added `gateway.on("connected", ...)` to clear `activeRuns` Set when gateway reconnects (stale run IDs from before restart would block the RPC fallback path)
+- **Client `extractTextContent`**: Broadened to match server — accepts any block with `text` or `value`, plus `value` and `delta` on objects
+- **Client `normalizeHistory`**: Added `tool_use` and `tool_result` role filtering
+- **Client poll reconciliation**: Changed from assistant-count-only gating to ID-based comparison (`hasNewMessages = normalized.some(m => !localIds.has(m.id))`) plus assistant count as secondary signal
+- **Client safety timeout**: Added 30-second safety timer on every send. If still awaiting after timeout, forces immediate history sync. Cleared on response/abort/error.
+
+**Why:**
+- Assistant responses were appearing in OpenClaw but not rendering in Jarvis. Root causes: (1) content extraction missed non-`text` block types from gateway, (2) poll reconciliation only triggered on assistant count deltas — if counts matched but IDs differed (e.g., after gateway restart), no reconciliation occurred, (3) `activeRuns` Set retained stale IDs after gateway restart, blocking the RPC fallback path, (4) no recovery mechanism when events were lost during GatewayRestart.
+
+**Files touched:**
+- `server/src/socket/chat.ts` — broadened extractText/extractMessageText, added system event handler, added reconnect cleanup
+- `client/lib/hooks/useChat.ts` — broadened extractTextContent, ID-based poll reconciliation, safety timeout, tool role filtering
+
+---
+
 ## 2026-02-07 — Add stage-based progress messages to chat thinking indicator
 
 **Author:** Omid (via Claude Code)

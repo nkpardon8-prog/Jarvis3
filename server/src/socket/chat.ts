@@ -5,41 +5,75 @@ import { OpenClawGateway } from "../gateway/connection";
 /**
  * Extract text from various OpenClaw content formats:
  * - string
- * - array of { type: "text", text: "..." } blocks
- * - object with .text or .content string
+ * - array of content blocks (text, output_text, markdown, etc.)
+ * - object with .text, .content, .value, or .delta string
  */
 function extractText(content: unknown): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
+    // Accept any block that has a text-like string field
+    const TEXT_BLOCK_TYPES = new Set(["text", "output_text", "markdown", "code", "result"]);
     return content
-      .filter((b: any) => b?.type === "text" && typeof b?.text === "string")
-      .map((b: any) => b.text)
+      .filter((b: any) => {
+        if (!b || typeof b !== "object") return false;
+        // Accept blocks with known text types, or any block with a text/value string
+        if (b.type && TEXT_BLOCK_TYPES.has(b.type) && typeof b.text === "string") return true;
+        if (typeof b.text === "string") return true;
+        if (typeof b.value === "string") return true;
+        return false;
+      })
+      .map((b: any) => b.text || b.value || "")
       .join("\n");
   }
   if (content && typeof content === "object") {
     const obj = content as Record<string, unknown>;
     if (typeof obj.text === "string") return obj.text;
     if (typeof obj.content === "string") return obj.content;
+    if (typeof obj.value === "string") return obj.value;
+    if (typeof obj.delta === "string") return obj.delta;
   }
   return "";
 }
 
 /**
  * Try multiple payload shapes to find text content.
- * Gateway payloads vary: message.content, content, text, message.text, etc.
+ * Gateway payloads vary: message.content, content, text, message.text, output, delta, etc.
  */
 function extractMessageText(payload: any): string {
+  if (!payload) return "";
   return (
     extractText(payload?.message?.content) ||
     extractText(payload?.content) ||
     (typeof payload?.text === "string" ? payload.text : "") ||
-    (typeof payload?.message?.text === "string" ? payload.message.text : "")
+    (typeof payload?.message?.text === "string" ? payload.message.text : "") ||
+    (typeof payload?.output === "string" ? payload.output : "") ||
+    (typeof payload?.delta === "string" ? payload.delta : "") ||
+    extractText(payload?.message) ||
+    ""
   );
 }
 
 export function registerChatHandlers(io: Server, gateway: OpenClawGateway) {
   // Track active runs so we can detect when the RPC response IS the final answer
   const activeRuns = new Set<string>();
+
+  // Clear stale runs on gateway reconnect (runs are lost after restart)
+  gateway.on("connected", () => {
+    if (activeRuns.size > 0) {
+      console.log(`[Chat] Gateway reconnected — clearing ${activeRuns.size} stale active runs`);
+      activeRuns.clear();
+    }
+  });
+
+  // Handle system events (GatewayRestart, etc.) — don't let them silently swallow in-flight messages
+  gateway.onEvent("system", (payload: any) => {
+    console.log(`[Chat] System event: ${payload?.type || payload?.event || JSON.stringify(payload).slice(0, 120)}`);
+    if (activeRuns.size > 0) {
+      console.log(`[Chat] System event while ${activeRuns.size} runs active — clearing runs, emitting idle`);
+      activeRuns.clear();
+      io.emit("chat:status", { status: "idle" });
+    }
+  });
 
   // OpenClaw emits "chat" events with a state field:
   //   state: "delta" | "final" | "error" | "aborted"
