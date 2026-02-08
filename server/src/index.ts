@@ -19,8 +19,26 @@ import oauthRoutes from "./routes/oauth";
 import gatewayRoutes from "./routes/gateway";
 import integrationsRoutes from "./routes/integrations";
 import driveRoutes from "./routes/drive";
+import composerRoutes from "./routes/composer";
 import { gateway } from "./gateway/connection";
 import { setupSocketIO } from "./socket";
+import multer from "multer";
+
+const composerUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  fileFilter: (_req, file, cb) => {
+    const allowed = [
+      "application/pdf",
+      "text/plain",
+      "text/csv",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "image/png",
+      "image/jpeg",
+    ];
+    cb(null, allowed.includes(file.mimetype));
+  },
+});
 
 const app = express();
 const httpServer = createServer(app);
@@ -48,6 +66,12 @@ app.use("/api/oauth", oauthRoutes);
 app.use("/api/gateway", gatewayRoutes);
 app.use("/api/integrations", integrationsRoutes);
 app.use("/api/drive", driveRoutes);
+
+// Composer routes — apply multer for file upload endpoints
+app.use("/api/composer/upload", composerUpload.single("file"));
+app.use("/api/composer/invoices/upload", composerUpload.single("file"));
+app.use("/api/composer/pdf/analyze", composerUpload.single("file"));
+app.use("/api/composer", composerRoutes);
 
 // Error handler (must be last)
 app.use(errorHandler);

@@ -4,6 +4,51 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-08 — Evolve Email into Composer: unified text/document agent area with 6 sub-tabs
+
+**Author:** Omid (via Claude Code)
+**Commit:** feat: evolve Email into Composer with Inbox, Drafts, Compose, Invoices, PDFs, People tabs
+**Branch:** main
+
+**What changed:**
+- **Prisma schema**: Enhanced `EmailTag` with `isSystem`, `sortingIntent`, `autoDraft` fields. Added 5 new models: `DraftReply`, `UploadedFile`, `Invoice`, `PdfSession`, `PdfForm` — all user-scoped with cascade delete.
+- **`server/src/routes/composer.ts`** (new): 20+ endpoints — system tag seeding, draft reply CRUD + AI generation, AI compose assist (rewrite/summarize/expand/tone/grammar), file upload with PDF text extraction via pdf-parse, invoice upload + AI structured extraction, PDF analyzer chat (session-based Q&A), AI form builder, people/relationship search with AI summary.
+- **`server/src/index.ts`**: Mounted composer routes with multer middleware for file upload endpoints (`/upload`, `/invoices/upload`, `/pdf/analyze`).
+- **`client/components/layout/TabNavigation.tsx`**: Renamed "Email" tab → "Composer" with `PenLine` icon.
+- **`client/app/dashboard/composer/page.tsx`** (new): Composer page entry point.
+- **`client/app/dashboard/email/page.tsx`**: Changed to redirect to `/dashboard/composer`.
+- **`client/components/composer/ComposerPage.tsx`** (new): Main page with 6 sub-tab navigation (Inbox, Drafts, Compose, Invoices, PDFs, People), seeds system tags on first load.
+- **`client/components/composer/InboxTab.tsx`** (new): Migrated inbox display from EmailPage (connection status, messages, auto-tag/auto-draft toggles, tag manager).
+- **`client/components/composer/DraftsTab.tsx`** (new): Draft reply list with expand/collapse, inline edit, approve/discard actions, status filter.
+- **`client/components/composer/ComposeTab.tsx`** (new): AI writing assistant with 6 AI actions, file attachment (drag & drop), context panel, word count.
+- **`client/components/composer/InvoicesTab.tsx`** (new): Invoice analyzer with upload zone, AI extraction, line items table, status management, summary cards.
+- **`client/components/composer/PdfsTab.tsx`** (new): PDF Analyzer (chat-style Q&A with session history) + Form Builder (AI-generated forms with visual preview).
+- **`client/components/composer/PeopleTab.tsx`** (new): Relationship search with AI summary, interaction history, "Compose to" cross-tab navigation.
+- **`client/lib/api.ts`**: Added `upload()` method for FormData requests.
+- **Server dependencies**: Added `multer`, `@types/multer`, `pdf-parse@1.1.1`.
+
+**Why:**
+- The Email tab was a basic inbox viewer. Business owners need a unified surface for all text/document workflows — composing, analyzing, extracting intelligence from documents, and understanding relationships. Composer consolidates these into 6 purpose-built sub-tabs while preserving all existing email functionality in the Inbox sub-tab.
+
+**Files touched:**
+- `server/prisma/schema.prisma` — 5 new models + EmailTag enhancements
+- `server/src/routes/composer.ts` — New: all Composer backend endpoints
+- `server/src/index.ts` — Mount composer routes + multer
+- `server/package.json`, `server/package-lock.json` — multer, pdf-parse deps
+- `client/lib/api.ts` — upload() method
+- `client/components/layout/TabNavigation.tsx` — Email → Composer rename
+- `client/app/dashboard/composer/page.tsx` — New: page route
+- `client/app/dashboard/email/page.tsx` — Redirect to /dashboard/composer
+- `client/components/composer/ComposerPage.tsx` — New: main page + sub-tabs
+- `client/components/composer/InboxTab.tsx` — New: migrated inbox
+- `client/components/composer/DraftsTab.tsx` — New: draft replies
+- `client/components/composer/ComposeTab.tsx` — New: AI writing assistant
+- `client/components/composer/InvoicesTab.tsx` — New: invoice analyzer
+- `client/components/composer/PdfsTab.tsx` — New: PDF analyzer + form builder
+- `client/components/composer/PeopleTab.tsx` — New: people/relationship search
+
+---
+
 ## 2026-02-07 — Fix effectivePayload merge losing message content from gateway events
 
 **Author:** Omid (via Claude Code)
