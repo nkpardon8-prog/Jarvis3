@@ -48,6 +48,32 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-08 — Update CLAUDE.md for per-user OAuth architecture
+
+**Author:** Omid (via Claude Code)
+**Commit:** Update CLAUDE.md to reflect per-user OAuth, Drive API, encrypted credentials
+**Branch:** oz/per-user-oauth
+
+**What changed:**
+- Updated Core Architecture Principle to clarify gateway vs local DB split (AI ops → gateway, user data → Prisma)
+- Updated architecture tree: added `drive.ts` route, `crypto.service.ts` in services
+- Replaced "OAuth hydration" references with per-user OAuth credential resolution
+- Updated credential storage docs: OAuth credentials now per-user in Prisma (encrypted), not gateway config
+- Removed `config.jarvis.oauth.<provider>` from gateway namespace conventions
+- Added `OAuthCredential` to Database models section
+- Rewrote OAuth Flow section for per-user model with credential resolution precedence and disconnect vs remove
+- Added `/api/drive` to API Route Map
+- Updated Environment Variables: added `OAUTH_CREDENTIALS_ENCRYPTION_KEY` and `OAUTH_BASE_URL`, marked legacy OAuth env vars as deprecated
+- Updated Gotchas: per-user OAuth, encrypted secrets, legacy plaintext token handling, OAuth callback URL
+
+**Why:**
+- CLAUDE.md must stay in sync with architectural changes so future agents understand the current credential model
+
+**Files touched:**
+- `CLAUDE.md`
+
+---
+
 ## 2026-02-08 — Harden per-user OAuth: prod exit, legacy token compat, UX fix
 
 **Author:** Omid (via Claude Code)
