@@ -4,6 +4,25 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-07 — Fix effectivePayload merge losing message content from gateway events
+
+**Author:** Omid (via Claude Code)
+**Commit:** Fix effectivePayload merge losing message content from gateway events
+**Branch:** main
+
+**What changed:**
+- **Root cause fix in `connection.ts`**: Changed `effectivePayload` construction from either/or logic (`event.payload` OR root-level fields) to always-merge logic (`{ ...rootFields, ...event.payload }`). Gateway was putting framing fields (state, runId, sessionKey) in `event.payload` and message content at the event root level — the old logic chose `event.payload` (since it had keys) and discarded root-level content entirely.
+- **Diagnostic logging in `chat.ts`**: Added raw payload dump on empty final messages, payload key logging on chat/agent events, to trace content location in future issues.
+
+**Why:**
+- Server logs showed `[Chat] Final message: (empty)` on every response. The `state=final` and `runId` were reaching the handler correctly, but `extractMessageText` found nothing because the actual message content (likely `message.content` at event root) was discarded by the `effectivePayload` branch logic. The fix ensures both sources are always merged.
+
+**Files touched:**
+- `server/src/gateway/connection.ts` — effectivePayload always-merge fix
+- `server/src/socket/chat.ts` — diagnostic logging for payload shape debugging
+
+---
+
 ## 2026-02-07 — Fix chat regression: harden content extraction, reconciliation, and recovery
 
 **Author:** Omid (via Claude Code)

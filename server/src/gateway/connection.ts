@@ -242,13 +242,10 @@ export class OpenClawGateway extends EventEmitter {
     } else if (msg.type === "event") {
       const event = msg as GatewayEvent;
 
-      // Build effective payload: gateway may put fields at top level or inside payload
-      let effectivePayload = event.payload;
-      if (!effectivePayload || Object.keys(effectivePayload).length === 0) {
-        // Fields are at the event root — extract everything except framing keys
-        const { type: _t, event: _e, seq: _s, stateVersion: _sv, payload: _p, ...rest } = msg as any;
-        effectivePayload = rest;
-      }
+      // Build effective payload: gateway may split fields between payload and root level.
+      // Always merge both so we never miss content regardless of where the gateway puts it.
+      const { type: _t, event: _e, seq: _s, stateVersion: _sv, payload: _p, ...rootFields } = msg as any;
+      const effectivePayload = { ...rootFields, ...(event.payload || {}) };
 
       // Emit to specific handlers
       const handlers = this.eventHandlers.get(event.event);

@@ -80,7 +80,8 @@ export function registerChatHandlers(io: Server, gateway: OpenClawGateway) {
   gateway.onEvent("chat", (payload: any) => {
     const state = payload?.state;
     const runId = payload?.runId;
-    console.log(`[Chat] Gateway event: state=${state || "none"}, runId=${runId || "?"}, session=${payload?.sessionKey || "?"}`);
+    const payloadKeys = Object.keys(payload || {}).join(",");
+    console.log(`[Chat] Gateway event: state=${state || "none"}, runId=${runId || "?"}, keys=[${payloadKeys}], session=${payload?.sessionKey || "?"}`);
 
     if (state === "delta") {
       const text = extractMessageText(payload);
@@ -96,6 +97,10 @@ export function registerChatHandlers(io: Server, gateway: OpenClawGateway) {
     } else if (state === "final") {
       const text = extractMessageText(payload);
       activeRuns.delete(payload.runId);
+      if (!text) {
+        // Dump raw payload to diagnose where content actually lives
+        console.log(`[Chat] Final payload (raw): ${JSON.stringify(payload).slice(0, 500)}`);
+      }
       console.log(`[Chat] Final message: ${text ? text.slice(0, 80) + "..." : "(empty)"}`);
 
       io.emit("chat:message", {
@@ -127,6 +132,7 @@ export function registerChatHandlers(io: Server, gateway: OpenClawGateway) {
     } else if (!state) {
       // Fallback: no state field — treat as final if there's text content
       const text = extractMessageText(payload);
+      console.log(`[Chat] No-state payload keys: ${Object.keys(payload || {}).join(", ")}`);
       if (text) {
         console.log(`[Chat] No-state fallback message: ${text.slice(0, 80)}...`);
         io.emit("chat:message", {
@@ -144,7 +150,7 @@ export function registerChatHandlers(io: Server, gateway: OpenClawGateway) {
   // Agent events (run start/end)
   gateway.onEvent("agent", (payload: any) => {
     const state = payload?.state;
-    console.log(`[Chat] Agent event: state=${state}, session=${payload?.sessionKey || "?"}`);
+    console.log(`[Chat] Agent event: state=${state}, keys=${Object.keys(payload || {}).join(",")}, session=${payload?.sessionKey || "?"}`);
     if (state === "running" || state === "thinking") {
       io.emit("chat:status", { status: "thinking", sessionKey: payload.sessionKey });
     } else if (state === "idle" || state === "done") {
