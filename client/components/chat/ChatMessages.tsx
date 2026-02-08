@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { ChatMessage as ChatMessageType } from "@/lib/hooks/useChat";
+import type { ActionContext } from "@/lib/skill-prompts";
 import { ChatMessage } from "./ChatMessage";
 import { ChatTokenStream } from "./ChatTokenStream";
 import { ThinkingIndicator } from "./ThinkingIndicator";
@@ -12,6 +13,7 @@ interface ChatMessagesProps {
   streamingText: string;
   isStreaming: boolean;
   awaitingResponse: boolean;
+  actionContext?: ActionContext | null;
 }
 
 export function ChatMessages({
@@ -19,6 +21,7 @@ export function ChatMessages({
   streamingText,
   isStreaming,
   awaitingResponse,
+  actionContext,
 }: ChatMessagesProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -58,7 +61,7 @@ export function ChatMessages({
         <ChatMessage key={msg.id} message={msg} />
       ))}
 
-      {awaitingResponse && !isStreaming && <ThinkingIndicator />}
+      {awaitingResponse && !isStreaming && <ThinkingIndicator actionContext={actionContext} />}
 
       {isStreaming && streamingText && <ChatTokenStream text={streamingText} />}
 

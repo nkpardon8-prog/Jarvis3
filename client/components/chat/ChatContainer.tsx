@@ -15,6 +15,7 @@ export function ChatContainer() {
     streamingText,
     isStreaming,
     awaitingResponse,
+    actionContext,
     sessions,
     currentSessionKey,
     sendMessage,
@@ -100,6 +101,7 @@ export function ChatContainer() {
           streamingText={streamingText}
           isStreaming={isStreaming}
           awaitingResponse={awaitingResponse}
+          actionContext={actionContext}
         />
 
         {/* Input bar */}

@@ -59,7 +59,7 @@ export function InstalledSkillCard({
       missingRequirements: skill.missingRequirements,
       requires: skill.requires,
     });
-    storeAutoPrompt(prompt);
+    storeAutoPrompt(prompt, "enable-inactive-skill");
     router.push("/dashboard/chat");
   }
 

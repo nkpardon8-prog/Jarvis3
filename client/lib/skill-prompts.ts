@@ -5,6 +5,15 @@
  */
 
 const STORAGE_KEY = "jarvis:auto-prompt";
+const CONTEXT_KEY = "jarvis:action-context";
+
+export type ActionContext =
+  | "add-premade-skill"
+  | "enable-inactive-skill"
+  | "build-custom-skill"
+  | "configure-skill-credentials"
+  | "create-custom-integration"
+  | "generic";
 
 /** Build a prompt for configuring/enabling an existing skill */
 export function buildAddSkillPrompt(skill: {
@@ -80,9 +89,14 @@ export function buildCustomSkillPrompt(): string {
 }
 
 /** Store a prompt for the chat page to pick up after navigation */
-export function storeAutoPrompt(prompt: string): void {
+export function storeAutoPrompt(prompt: string, context?: ActionContext): void {
   try {
     sessionStorage.setItem(STORAGE_KEY, prompt);
+    if (context) {
+      sessionStorage.setItem(CONTEXT_KEY, context);
+    } else {
+      sessionStorage.removeItem(CONTEXT_KEY);
+    }
   } catch {
     // sessionStorage may be unavailable in some contexts
   }
@@ -96,6 +110,19 @@ export function consumeAutoPrompt(): string | null {
       sessionStorage.removeItem(STORAGE_KEY);
     }
     return prompt;
+  } catch {
+    return null;
+  }
+}
+
+/** Consume the stored action context (reads and clears) */
+export function consumeActionContext(): ActionContext | null {
+  try {
+    const ctx = sessionStorage.getItem(CONTEXT_KEY) as ActionContext | null;
+    if (ctx) {
+      sessionStorage.removeItem(CONTEXT_KEY);
+    }
+    return ctx;
   } catch {
     return null;
   }

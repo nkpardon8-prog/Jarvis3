@@ -55,7 +55,7 @@ export function SkillsPage() {
 
   function handleBuildCustomSkill() {
     const prompt = buildCustomSkillPrompt();
-    storeAutoPrompt(prompt);
+    storeAutoPrompt(prompt, "build-custom-skill");
     router.push("/dashboard/chat");
   }
 

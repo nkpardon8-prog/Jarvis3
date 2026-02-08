@@ -45,7 +45,7 @@ export function PremadeSkillsBrowser({ onClose }: PremadeSkillsBrowserProps) {
 
   function handleBuildCustomSkill() {
     const prompt = buildCustomSkillPrompt();
-    storeAutoPrompt(prompt);
+    storeAutoPrompt(prompt, "build-custom-skill");
     router.push("/dashboard/chat");
   }
 
@@ -65,7 +65,7 @@ export function PremadeSkillsBrowser({ onClose }: PremadeSkillsBrowserProps) {
       }
 
       const prompt = buildPremadeSkillPrompt(res.data.slug);
-      storeAutoPrompt(prompt);
+      storeAutoPrompt(prompt, "add-premade-skill");
       router.push("/dashboard/chat");
     } catch (err: any) {
       setError(err.message || "Failed to resolve URL");

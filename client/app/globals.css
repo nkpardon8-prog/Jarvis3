@@ -172,6 +172,16 @@ input:focus, textarea:focus, select:focus {
   20% { opacity: 1; transform: translateY(0); }
 }
 
+/* Stage transition — smooth fade + slide for 8s stage messages */
+.thinking-stage-fade {
+  animation: thinking-stage-enter 0.5s ease-out;
+}
+
+@keyframes thinking-stage-enter {
+  0% { opacity: 0; transform: translateY(6px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
 /* Respect reduced-motion preference */
 @media (prefers-reduced-motion: reduce) {
   .thinking-card,
@@ -179,7 +189,8 @@ input:focus, textarea:focus, select:focus {
   .thinking-ring-outer,
   .thinking-ring-inner,
   .thinking-pulse,
-  .thinking-text-fade {
+  .thinking-text-fade,
+  .thinking-stage-fade {
     animation: none;
   }
   .thinking-shimmer {

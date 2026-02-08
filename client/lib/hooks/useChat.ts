@@ -3,7 +3,8 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { useSocket } from "@/lib/hooks/useSocket";
 import { api } from "@/lib/api";
-import { consumeAutoPrompt } from "@/lib/skill-prompts";
+import { consumeAutoPrompt, consumeActionContext } from "@/lib/skill-prompts";
+import type { ActionContext } from "@/lib/skill-prompts";
 
 export interface ChatMessage {
   id: string;
@@ -28,6 +29,7 @@ interface UseChatReturn {
   isThinking: boolean;
   isStreaming: boolean;
   awaitingResponse: boolean;
+  actionContext: ActionContext | null;
   sessions: ChatSession[];
   currentSessionKey: string;
   sendMessage: (message: string) => void;
@@ -92,6 +94,7 @@ export function useChat(): UseChatReturn {
   const [isThinking, setIsThinking] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
   const [awaitingResponse, setAwaitingResponse] = useState(false);
+  const [actionContext, setActionContext] = useState<ActionContext | null>(null);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionKey, setCurrentSessionKey] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -113,6 +116,7 @@ export function useChat(): UseChatReturn {
   const markResponseReceived = useCallback(() => {
     awaitingResponseRef.current = false;
     setAwaitingResponse(false);
+    setActionContext(null);
     setIsThinking(false);
     setIsStreaming(false);
     streamingRef.current = "";
@@ -345,6 +349,7 @@ export function useChat(): UseChatReturn {
       return;
     }
 
+    const ctx = consumeActionContext();
     autoPromptHandled.current = true;
 
     const doAutoSend = async () => {
@@ -374,6 +379,7 @@ export function useChat(): UseChatReturn {
 
         awaitingResponseRef.current = true;
         setAwaitingResponse(true);
+        if (ctx) setActionContext(ctx);
         startPolling(true);
 
         socket.emit("chat:send", {
@@ -497,6 +503,7 @@ export function useChat(): UseChatReturn {
     isThinking,
     isStreaming,
     awaitingResponse,
+    actionContext,
     sessions,
     currentSessionKey,
     sendMessage,

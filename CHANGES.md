@@ -4,6 +4,36 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-07 — Add stage-based progress messages to chat thinking indicator
+
+**Author:** Omid (via Claude Code)
+**Commit:** Add stage-based progress messages to chat thinking indicator
+**Branch:** main
+
+**What changed:**
+- Added `ActionContext` type and `consumeActionContext()` to `skill-prompts.ts` — stores/retrieves action context alongside auto-prompt in sessionStorage
+- Updated all `storeAutoPrompt` callers to pass action context: `"add-premade-skill"`, `"enable-inactive-skill"`, `"build-custom-skill"` (InstalledSkillCard, PremadeSkillsBrowser, SkillsPage)
+- `useChat.ts`: consumes action context on auto-prompt, exposes `actionContext` state, clears it in `markResponseReceived()`
+- Wired `actionContext` through ChatContainer → ChatMessages → ThinkingIndicator
+- Rewrote ThinkingIndicator: replaced 1.5s rotating generic messages with 8-second stage-based progress messages keyed by `actionContext` (6 context types with 7-14 stages each). Holds final message on long waits. Uses `animKey` for smooth fade+slide transitions on stage change.
+- Added `thinking-stage-fade` CSS animation (0.5s ease-out fade+translateY) with `prefers-reduced-motion` support
+
+**Why:**
+- Long-running operations (30s–2min) like skill installs had generic "Checking context" / "Composing answer" messages that didn't reflect what was actually happening. Stage-based messages make the wait feel trustworthy and informative.
+
+**Files touched:**
+- `client/lib/skill-prompts.ts` — added `ActionContext` type, `consumeActionContext()`, updated `storeAutoPrompt` signature
+- `client/lib/hooks/useChat.ts` — added `actionContext` state, consume/expose/clear
+- `client/components/chat/ThinkingIndicator.tsx` — rewritten with stage-based messages
+- `client/components/chat/ChatContainer.tsx` — pass `actionContext` through
+- `client/components/chat/ChatMessages.tsx` — accept and forward `actionContext` prop
+- `client/components/skills/InstalledSkillCard.tsx` — pass `"enable-inactive-skill"` context
+- `client/components/skills/PremadeSkillsBrowser.tsx` — pass `"build-custom-skill"` and `"add-premade-skill"` contexts
+- `client/components/skills/SkillsPage.tsx` — pass `"build-custom-skill"` context
+- `client/app/globals.css` — added `thinking-stage-fade` animation
+
+---
+
 ## 2026-02-07 — Strengthen CLAUDE.md commit and change-tracking rules
 
 **Author:** Omid (via Claude Code)
