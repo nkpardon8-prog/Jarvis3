@@ -23,16 +23,24 @@ export async function automationExec(userId: string, prompt: string): Promise<st
   const timeout = setTimeout(() => controller.abort(), 30000);
 
   try {
+    let result: unknown;
     switch (provider) {
       case "openai":
-        return await callOpenAI(apiKey, modelId, prompt, controller.signal);
+        result = await callOpenAI(apiKey, modelId, prompt, controller.signal);
+        break;
       case "anthropic":
-        return await callAnthropic(apiKey, modelId, prompt, controller.signal);
+        result = await callAnthropic(apiKey, modelId, prompt, controller.signal);
+        break;
       case "google":
-        return await callGoogle(apiKey, modelId, prompt, controller.signal);
+        result = await callGoogle(apiKey, modelId, prompt, controller.signal);
+        break;
       default:
         throw new Error(`Unsupported automation provider: ${provider}`);
     }
+    // Ensure we always return a string
+    if (typeof result === "string") return result;
+    if (result && typeof result === "object") return JSON.stringify(result);
+    return String(result ?? "");
   } finally {
     clearTimeout(timeout);
   }

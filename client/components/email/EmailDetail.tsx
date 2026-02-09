@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { GlassPanel } from "@/components/ui/GlassPanel";
@@ -23,6 +24,14 @@ export function EmailDetail({ messageId, provider, onClose, onReply }: EmailDeta
       return res.data;
     },
   });
+
+  const bodyContent = data?.body || "";
+  const isHtml = /<\s*(html|head|body|div|table|p|br|span|img)\b/i.test(bodyContent);
+
+  const plainTextElements = useMemo(() => {
+    if (!bodyContent || isHtml) return null;
+    return linkifyPlainText(cleanPlainText(bodyContent));
+  }, [bodyContent, isHtml]);
 
   if (isLoading) {
     return (
@@ -51,9 +60,6 @@ export function EmailDetail({ messageId, provider, onClose, onReply }: EmailDeta
     const replySubject = data.subject?.startsWith("Re: ") ? data.subject : `Re: ${data.subject}`;
     onReply(replyTo, replySubject);
   };
-
-  const bodyContent = data.body || "";
-  const isHtml = /<[a-z][\s\S]*>/i.test(bodyContent);
 
   return (
     <div className="h-full flex flex-col">
@@ -87,12 +93,97 @@ export function EmailDetail({ messageId, provider, onClose, onReply }: EmailDeta
           />
         ) : (
           <div className="text-xs text-hud-text-secondary leading-relaxed whitespace-pre-wrap break-words">
-            {bodyContent}
+            {plainTextElements}
           </div>
         )}
       </div>
     </div>
   );
+}
+
+/**
+ * Convert URLs in cleaned plain text into short clickable hyperlinks.
+ * Returns React elements instead of a raw string.
+ */
+function linkifyPlainText(text: string): React.ReactNode[] {
+  const urlRegex = /(https?:\/\/[^\s<>]+)/g;
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let key = 0;
+
+  while ((match = urlRegex.exec(text)) !== null) {
+    // Add text before the URL
+    if (match.index > lastIndex) {
+      parts.push(text.slice(lastIndex, match.index));
+    }
+
+    const url = match[1];
+    let label: string;
+    try {
+      const parsed = new URL(url);
+      const host = parsed.hostname.replace(/^www\./, "");
+      // Use pathname hint if short enough, otherwise just domain
+      const path = parsed.pathname.replace(/\/$/, "");
+      if (path && path !== "/" && path.length <= 20) {
+        label = host + path;
+      } else {
+        label = host;
+      }
+    } catch {
+      label = "link";
+    }
+
+    parts.push(
+      <a
+        key={key++}
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-hud-accent hover:underline"
+        title={url}
+      >
+        {label}
+      </a>
+    );
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  // Add remaining text after last URL
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex));
+  }
+
+  return parts;
+}
+
+/**
+ * Clean plain text email: collapse tracking/marketing URLs into readable text,
+ * strip base64 noise, and remove excessive whitespace.
+ */
+function cleanPlainText(text: string): string {
+  return text
+    // Remove known tracking/redirect URLs entirely (these add no value)
+    .replace(/(https?:\/\/[^\s]*)/g, (url) => {
+      try {
+        const host = new URL(url).hostname.replace(/^www\./, "");
+        if (/ablink|click\.|track\.|links\.|sendgrid|mailchimp|list-manage|email\.|mandrillapp|mailgun/i.test(host)) return "";
+        return url; // Keep non-tracking URLs — linkifyPlainText will shorten them
+      } catch {
+        return url;
+      }
+    })
+    // Clean up parentheses/brackets left empty after URL removal
+    .replace(/\(\s*\)/g, "")
+    .replace(/\[\s*\]/g, "")
+    // Remove leftover base64-like gibberish lines (30+ alphanumeric with dashes/underscores)
+    .replace(/^[A-Za-z0-9\-_+=\/]{30,}$/gm, "")
+    // Remove "view in browser" / "view as webpage" standalone lines
+    .replace(/^\s*(view (this )?(email |message )?(in (your )?browser|as a? ?web ?page|online)).*$/gim, "")
+    // Collapse 3+ blank lines into 2
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 /**
@@ -103,17 +194,23 @@ function sanitizeEmailHtml(html: string): string {
   return html
     // Remove script tags and their content
     .replace(/<script[\s\S]*?<\/script>/gi, "")
-    // Remove style tags (we'll apply our own)
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
     // Remove on* event handlers
     .replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "")
     // Remove javascript: URLs
     .replace(/href\s*=\s*"javascript:[^"]*"/gi, 'href="#"')
     .replace(/href\s*=\s*'javascript:[^']*'/gi, "href='#'")
-    // Remove form elements
+    // Remove form/input elements (but keep button-styled <a> links)
     .replace(/<\/?form[\s\S]*?>/gi, "")
-    .replace(/<\/?input[\s\S]*?>/gi, "")
-    .replace(/<\/?button[\s\S]*?>/gi, "")
+    .replace(/<input[\s\S]*?\/?>/gi, "")
+    // Strip dangerous CSS properties from inline styles (position, expression, etc.)
+    .replace(/style\s*=\s*"([^"]*)"/gi, (_match, styles: string) => {
+      const clean = styles
+        .replace(/position\s*:\s*(fixed|absolute)/gi, "")
+        .replace(/expression\s*\([^)]*\)/gi, "")
+        .replace(/-moz-binding\s*:[^;]*/gi, "")
+        .replace(/behavior\s*:[^;]*/gi, "");
+      return `style="${clean}"`;
+    })
     // Make links open in new tab
     .replace(/<a\s/gi, '<a target="_blank" rel="noopener noreferrer" ')
     // Remove iframes

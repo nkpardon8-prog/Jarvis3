@@ -4,6 +4,41 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-09 — Manual tagging, bulk AI re-tag, faster contacts, improved email rendering
+
+**Author:** Omid (via Claude Code)
+**Commit:** feat: manual email tagging, bulk AI re-tag, cached contact search, refined email rendering
+**Branch:** oz/email-restructure-automation
+
+**What changed:**
+- **Manual tag assignment** — Each email in EmailList now shows a tag badge (click to change) or a small tag icon (click to assign). Dropdown shows all available tags with "Remove tag" option. Filter by tag uses tagId instead of tagName for correctness.
+- **Bulk "Re-tag All" button** in TagManager — calls new `POST /auto-tag` endpoint which runs every recent email through the automation AI lane to assign tags. New `retagAllEmails()` function in email-intelligence service clears old records and re-processes all messages.
+- **Separate tag data flow** — Removed fire-and-forget `processNewEmails()` call from inbox endpoint. Added `GET /email-tags?ids=...` for batch tag lookups and `POST /tag-email` for individual assignment/removal. EmailPage fetches tags separately via React Query.
+- **Faster contact search** — 5-minute in-memory per-user contact cache built from recent 50 inbox/sent messages with parallel metadata fetching (batches of 10). Debounced input (300ms) in ComposePane. Min 1 char to search (was 2). Loading/empty states in dropdown.
+- **Improved email body rendering** — HTML emails: kept `<style>` tags (were being stripped), strip dangerous CSS properties instead. Plain text emails: new `cleanPlainText()` strips tracking URLs, base64 noise, "view in browser" lines; `linkifyPlainText()` converts URLs into short clickable links with domain labels.
+- **Prominent AI Help buttons** — Both ComposePane and ComposeTab now have a large full-width "AI Help" button above the action bar. ComposeTab context section is always visible (no toggle).
+- **automation.service** — `automationExec()` now always returns a string (handles object/null responses from providers).
+- **Inbox default** — Bumped default max from 20→50, cap from 50→100. Removed `withProcessed` query param.
+- **TagManager always visible** — Replaced toggle button with smooth scroll-to via ref.
+
+**Why:**
+- Auto-tagging on every inbox fetch was wasteful and opaque. Manual tagging gives users control; bulk re-tag gives the AI-powered convenience on demand. Contact search was slow (per-keystroke Gmail API calls) — caching makes it instant. Email rendering needed polish for real-world marketing/transactional emails.
+
+**Files touched:**
+- `server/src/routes/email.ts` — New endpoints (tag-email, email-tags, auto-tag), removed processNewEmails from inbox, improved body extraction (prefer HTML), cached contact search
+- `server/src/services/email-intelligence.service.ts` — New `retagAllEmails()` function
+- `server/src/services/automation.service.ts` — Ensure string return type
+- `client/components/email/EmailPage.tsx` — Separate email-tags query, pass emailTags/onTagEmail to EmailList, scroll-to TagManager
+- `client/components/email/EmailList.tsx` — Tag badge per email, tag assignment dropdown, filter by tagId
+- `client/components/email/EmailDetail.tsx` — `cleanPlainText()`, `linkifyPlainText()`, improved HTML sanitizer (keep styles, strip dangerous CSS)
+- `client/components/email/ComposePane.tsx` — Debounced contact search, cached contacts, prominent AI Help button
+- `client/components/email/TagManager.tsx` — "Re-tag All" button with status feedback
+- `client/components/composer/ComposeTab.tsx` — Prominent AI Help button, always-visible context section
+- `client/components/layout/DashboardShell.tsx` — Removed withProcessed from prefetch
+- `client/app/globals.css` — Refined email HTML styles (preserve inline styles, button links, hr, h4-h6, background colors)
+
+---
+
 ## 2026-02-09 — Fix deliver param, people search, email body rendering, rename People to Search
 
 **Author:** Omid (via Claude Code)

@@ -223,19 +223,28 @@ input:focus, textarea:focus, select:focus {
   }
 }
 
-/* Email HTML body rendering */
+/* Email HTML body rendering — preserve original email styling */
 .email-body-html {
   color: #8892a4;
   word-break: break-word;
   overflow-wrap: break-word;
+  line-height: 1.5;
 }
 .email-body-html img {
   max-width: 100%;
   height: auto;
+  display: inline-block;
 }
 .email-body-html a {
   color: #00d4ff;
   text-decoration: underline;
+}
+/* Preserve styled button links (common in marketing emails) */
+.email-body-html a[style*="background"],
+.email-body-html a[style*="padding"] {
+  display: inline-block;
+  text-decoration: none;
+  border-radius: 4px;
 }
 .email-body-html table {
   border-collapse: collapse;
@@ -243,7 +252,12 @@ input:focus, textarea:focus, select:focus {
 }
 .email-body-html td,
 .email-body-html th {
-  padding: 4px 8px;
+  vertical-align: top;
+}
+/* Let table cells keep their padding from inline styles */
+.email-body-html td[style],
+.email-body-html th[style] {
+  padding: revert;
 }
 .email-body-html blockquote {
   border-left: 2px solid rgba(0, 212, 255, 0.2);
@@ -258,9 +272,27 @@ input:focus, textarea:focus, select:focus {
   margin-top: 8px;
   margin-bottom: 4px;
 }
+.email-body-html h4,
+.email-body-html h5,
+.email-body-html h6 {
+  color: #c0c8d8;
+  margin-top: 6px;
+  margin-bottom: 3px;
+}
 .email-body-html p {
   margin-bottom: 8px;
 }
+.email-body-html hr {
+  border: none;
+  border-top: 1px solid rgba(0, 212, 255, 0.12);
+  margin: 12px 0;
+}
 .email-body-html * {
   max-width: 100%;
+  box-sizing: border-box;
+}
+/* Allow background colors on divs/tds (common for email sections) */
+.email-body-html div[style*="background"],
+.email-body-html td[style*="background"] {
+  border-radius: 4px;
 }

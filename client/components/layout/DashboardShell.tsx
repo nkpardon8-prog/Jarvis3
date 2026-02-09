@@ -14,7 +14,7 @@ export function DashboardShell({ children }: { children: ReactNode }) {
     queryClient.prefetchQuery({
       queryKey: ["email-inbox"],
       queryFn: async () => {
-        const res = await api.get<any>("/email/inbox?max=15&withProcessed=true");
+        const res = await api.get<any>("/email/inbox?max=15");
         if (!res.ok) throw new Error(res.error);
         return res.data;
       },

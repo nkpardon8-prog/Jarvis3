@@ -5,7 +5,8 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import { HudButton } from "@/components/ui/HudButton";
-import { Plus, Trash2, Edit2, Check, X, Tag } from "lucide-react";
+import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import { Plus, Trash2, Edit2, Tag, Sparkles } from "lucide-react";
 
 interface TagManagerProps {
   tags: any[];
@@ -65,6 +66,17 @@ export function TagManager({ tags }: TagManagerProps) {
     },
   });
 
+  const autoTag = useMutation({
+    mutationFn: async () => {
+      const res = await api.post<{ processed: number; total: number }>("/email/auto-tag");
+      if (!res.ok) throw new Error(res.error || "Auto-tagging failed");
+      return res.data!;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["email-tags"] });
+    },
+  });
+
   const resetForm = () => {
     setName("");
     setColor(PRESET_COLORS[0]);
@@ -100,16 +112,42 @@ export function TagManager({ tags }: TagManagerProps) {
           <h3 className="text-sm font-semibold text-hud-text">Email Tags</h3>
           <span className="text-xs text-hud-text-muted">({tags.length})</span>
         </div>
-        <button
-          onClick={() => {
-            resetForm();
-            setShowForm(!showForm);
-          }}
-          className="p-1.5 rounded-lg text-hud-text-muted hover:text-hud-accent hover:bg-hud-accent/10 transition-colors"
-        >
-          <Plus size={16} />
-        </button>
+        <div className="flex items-center gap-2">
+          <HudButton
+            size="sm"
+            variant="secondary"
+            onClick={() => autoTag.mutate()}
+            disabled={autoTag.isPending || tags.length === 0}
+          >
+            {autoTag.isPending ? <LoadingSpinner size="sm" /> : <Sparkles size={12} />}
+            {autoTag.isPending ? "Tagging..." : "Re-tag All"}
+          </HudButton>
+          <HudButton
+            size="sm"
+            onClick={() => {
+              resetForm();
+              setShowForm(!showForm);
+            }}
+          >
+            <Plus size={14} />
+            Add Tag
+          </HudButton>
+        </div>
       </div>
+
+      {/* Auto-tag status */}
+      {autoTag.isSuccess && (
+        <div className="mb-3 p-2 bg-hud-success/10 border border-hud-success/20 rounded-lg">
+          <p className="text-[10px] text-hud-success">
+            Auto-tagged {autoTag.data?.processed} of {autoTag.data?.total} emails.
+          </p>
+        </div>
+      )}
+      {autoTag.isError && (
+        <div className="mb-3 p-2 bg-hud-error/10 border border-hud-error/20 rounded-lg">
+          <p className="text-[10px] text-hud-error">{(autoTag.error as Error).message}</p>
+        </div>
+      )}
 
       {/* Form */}
       {showForm && (

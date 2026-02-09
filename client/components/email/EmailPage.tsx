@@ -1,11 +1,10 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
-import { HudButton } from "@/components/ui/HudButton";
 import { EmailList } from "./EmailList";
 import { EmailDetail } from "./EmailDetail";
 import { ComposePane } from "./ComposePane";
@@ -13,7 +12,6 @@ import { TagManager } from "./TagManager";
 import {
   Mail,
   Eye,
-  Tag,
   Plus,
 } from "lucide-react";
 
@@ -34,7 +32,7 @@ export function EmailPage() {
   const [filterTag, setFilterTag] = useState<string | null>(null);
   const [composeToEmail, setComposeToEmail] = useState<string | undefined>();
   const [composeSubject, setComposeSubject] = useState<string | undefined>();
-  const [showTagManager, setShowTagManager] = useState(false);
+  const tagManagerRef = useRef<HTMLDivElement>(null);
 
   const { data: statusData } = useQuery({
     queryKey: ["email-status"],
@@ -57,12 +55,27 @@ export function EmailPage() {
   const { data: inboxData, isLoading: inboxLoading } = useQuery({
     queryKey: ["email-inbox"],
     queryFn: async () => {
-      const res = await api.get<any>("/email/inbox?max=25&withProcessed=true");
+      const res = await api.get<any>("/email/inbox?max=50");
       if (!res.ok) throw new Error(res.error);
       return res.data;
     },
     enabled: !!statusData?.connected,
     refetchInterval: 3 * 60 * 1000,
+  });
+
+  const messages: EmailMessage[] = inboxData?.messages || [];
+
+  // Fetch tag assignments for current emails
+  const { data: emailTagsData } = useQuery({
+    queryKey: ["email-tags", messages.map((m) => m.id).join(",")],
+    queryFn: async () => {
+      const ids = messages.map((m) => m.id).join(",");
+      if (!ids) return { tags: {} };
+      const res = await api.get<any>(`/email/email-tags?ids=${ids}`);
+      if (!res.ok) return { tags: {} };
+      return res.data;
+    },
+    enabled: messages.length > 0,
   });
 
   // Seed system tags on first load
@@ -71,9 +84,8 @@ export function EmailPage() {
   }, []);
 
   const connected = statusData?.connected || false;
-  const messages: EmailMessage[] = inboxData?.messages || [];
-  const processed = inboxData?.processed || {};
   const tags = settingsData?.tags || [];
+  const emailTags: Record<string, { tagId: string; tagName: string | null }> = emailTagsData?.tags || {};
   const unreadCount = messages.filter((m) => !m.read).length;
 
   // Find the selected email for detail view
@@ -153,14 +165,14 @@ export function EmailPage() {
         {tags.map((tag: any) => (
           <button
             key={tag.id}
-            onClick={() => setFilterTag(filterTag === tag.name ? null : tag.name)}
+            onClick={() => setFilterTag(filterTag === tag.id ? null : tag.id)}
             className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-medium transition-colors ${
-              filterTag === tag.name
+              filterTag === tag.id
                 ? "border"
                 : "text-hud-text-muted hover:text-hud-text border border-hud-border"
             }`}
             style={
-              filterTag === tag.name
+              filterTag === tag.id
                 ? {
                     backgroundColor: `${tag.color}15`,
                     color: tag.color,
@@ -174,7 +186,7 @@ export function EmailPage() {
         ))}
 
         <button
-          onClick={() => setShowTagManager(!showTagManager)}
+          onClick={() => tagManagerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
           className="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-medium text-hud-text-muted hover:text-hud-accent border border-hud-border hover:border-hud-accent/30 transition-colors"
         >
           <Plus size={10} />
@@ -193,16 +205,21 @@ export function EmailPage() {
           <GlassPanel className="!p-2 overflow-hidden">
             <EmailList
               messages={messages}
-              processed={processed}
               selectedId={selectedEmailId}
               onSelect={(id) => {
                 setSelectedEmailId(id);
                 setComposeToEmail(undefined);
                 setComposeSubject(undefined);
               }}
-              filterTag={filterTag}
               showUnreadOnly={showUnreadOnly}
+              filterTag={filterTag}
               tags={tags}
+              emailTags={emailTags}
+              onTagEmail={(emailId, provider, tagId, tagName) => {
+                api.post("/email/tag-email", { emailId, provider, tagId, tagName }).then(() => {
+                  queryClient.invalidateQueries({ queryKey: ["email-tags"] });
+                });
+              }}
             />
           </GlassPanel>
 
@@ -230,7 +247,9 @@ export function EmailPage() {
       )}
 
       {/* Tag management section */}
-      {showTagManager && <TagManager tags={tags} />}
+      <div ref={tagManagerRef}>
+        <TagManager tags={tags} />
+      </div>
     </div>
   );
 }

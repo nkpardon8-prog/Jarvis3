@@ -1,12 +1,7 @@
 "use client";
 
-import { Circle, CheckCircle2 } from "lucide-react";
-
-interface ProcessedData {
-  summary: string | null;
-  tagName: string | null;
-  tagId: string | null;
-}
+import { useState } from "react";
+import { Circle, CheckCircle2, Tag, X } from "lucide-react";
 
 interface EmailMessage {
   id: string;
@@ -20,33 +15,34 @@ interface EmailMessage {
 
 interface EmailListProps {
   messages: EmailMessage[];
-  processed: Record<string, ProcessedData>;
   selectedId: string | null;
   onSelect: (id: string) => void;
-  filterTag: string | null;
   showUnreadOnly: boolean;
+  filterTag: string | null;
   tags: any[];
+  emailTags: Record<string, { tagId: string; tagName: string | null }>;
+  onTagEmail: (emailId: string, provider: string, tagId: string | null, tagName: string | null) => void;
 }
 
 export function EmailList({
   messages,
-  processed,
   selectedId,
   onSelect,
-  filterTag,
   showUnreadOnly,
+  filterTag,
   tags,
+  emailTags,
+  onTagEmail,
 }: EmailListProps) {
+  const [tagMenuId, setTagMenuId] = useState<string | null>(null);
+
   // Apply filters
   let filtered = messages;
   if (showUnreadOnly) {
     filtered = filtered.filter((m) => !m.read);
   }
   if (filterTag) {
-    filtered = filtered.filter((m) => {
-      const p = processed[m.id];
-      return p?.tagName?.toLowerCase() === filterTag.toLowerCase();
-    });
+    filtered = filtered.filter((m) => emailTags[m.id]?.tagId === filterTag);
   }
 
   if (filtered.length === 0) {
@@ -60,65 +56,112 @@ export function EmailList({
   return (
     <div className="space-y-0.5 overflow-y-auto max-h-[calc(100vh-260px)]">
       {filtered.map((msg) => {
-        const p = processed[msg.id];
         const isSelected = selectedId === msg.id;
-        const tag = p?.tagName ? tags.find((t: any) => t.name === p.tagName) : null;
+        const emailTag = emailTags[msg.id];
+        const tagInfo = emailTag ? tags.find((t: any) => t.id === emailTag.tagId) : null;
 
         return (
-          <button
-            key={msg.id}
-            onClick={() => onSelect(msg.id)}
-            className={`w-full text-left px-3 py-2.5 rounded-lg transition-colors border ${
-              isSelected
-                ? "bg-hud-accent/10 border-hud-accent/30"
-                : msg.read
-                  ? "border-transparent hover:bg-white/3"
-                  : "border-hud-accent/10 bg-hud-accent/5 hover:bg-hud-accent/8"
-            }`}
-          >
-            <div className="flex items-start gap-2">
-              <div className="shrink-0 mt-1">
-                {msg.read ? (
-                  <CheckCircle2 size={11} className="text-hud-text-muted/40" />
-                ) : (
-                  <Circle size={11} className="text-hud-accent" />
-                )}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-1.5">
-                  <p className={`text-xs truncate flex-1 ${msg.read ? "text-hud-text-secondary" : "text-hud-text font-medium"}`}>
-                    {extractName(msg.from)}
-                  </p>
-                  <span className="text-[9px] text-hud-text-muted shrink-0">
-                    {formatRelativeDate(msg.date)}
-                  </span>
+          <div key={msg.id} className="relative">
+            <button
+              onClick={() => onSelect(msg.id)}
+              className={`w-full text-left px-3 py-2.5 rounded-lg transition-colors border ${
+                isSelected
+                  ? "bg-hud-accent/10 border-hud-accent/30"
+                  : msg.read
+                    ? "border-transparent hover:bg-white/3"
+                    : "border-hud-accent/10 bg-hud-accent/5 hover:bg-hud-accent/8"
+              }`}
+            >
+              <div className="flex items-start gap-2">
+                <div className="shrink-0 mt-1">
+                  {msg.read ? (
+                    <CheckCircle2 size={11} className="text-hud-text-muted/40" />
+                  ) : (
+                    <Circle size={11} className="text-hud-accent" />
+                  )}
                 </div>
-                <p className={`text-[11px] truncate ${msg.read ? "text-hud-text-muted" : "text-hud-text-secondary"}`}>
-                  {msg.subject}
-                </p>
-                {p?.summary ? (
-                  <p className="text-[10px] text-hud-text-muted/70 truncate mt-0.5">
-                    {p.summary}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <p className={`text-xs truncate flex-1 ${msg.read ? "text-hud-text-secondary" : "text-hud-text font-medium"}`}>
+                      {extractName(msg.from)}
+                    </p>
+                    <span className="text-[9px] text-hud-text-muted shrink-0">
+                      {formatRelativeDate(msg.date)}
+                    </span>
+                  </div>
+                  <p className={`text-[11px] truncate ${msg.read ? "text-hud-text-muted" : "text-hud-text-secondary"}`}>
+                    {msg.subject}
                   </p>
-                ) : (
-                  <p className="text-[10px] text-hud-text-muted/50 truncate mt-0.5">
-                    {msg.snippet}
-                  </p>
-                )}
-                {tag && (
-                  <span
-                    className="inline-block text-[9px] px-1.5 py-0.5 rounded mt-1"
-                    style={{
-                      backgroundColor: `${tag.color || "#00d4ff"}15`,
-                      color: tag.color || "#00d4ff",
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <p className="text-[10px] text-hud-text-muted/50 truncate flex-1">
+                      {msg.snippet}
+                    </p>
+                    {/* Tag badge or tag button */}
+                    {tagInfo ? (
+                      <span
+                        className="inline-flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded shrink-0 cursor-pointer"
+                        style={{
+                          backgroundColor: `${tagInfo.color || "#00d4ff"}15`,
+                          color: tagInfo.color || "#00d4ff",
+                        }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setTagMenuId(tagMenuId === msg.id ? null : msg.id);
+                        }}
+                      >
+                        {tagInfo.name}
+                      </span>
+                    ) : (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setTagMenuId(tagMenuId === msg.id ? null : msg.id);
+                        }}
+                        className="shrink-0 p-0.5 text-hud-text-muted/30 hover:text-hud-accent transition-colors"
+                        title="Add tag"
+                      >
+                        <Tag size={10} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </button>
+
+            {/* Tag assignment dropdown */}
+            {tagMenuId === msg.id && (
+              <div className="absolute right-2 top-full z-50 mt-0.5 bg-hud-bg border border-hud-border rounded-lg shadow-xl overflow-hidden min-w-[120px]">
+                {tags.map((tag: any) => (
+                  <button
+                    key={tag.id}
+                    onClick={() => {
+                      onTagEmail(msg.id, msg.provider, tag.id, tag.name);
+                      setTagMenuId(null);
                     }}
+                    className="w-full text-left px-3 py-1.5 hover:bg-hud-accent/10 transition-colors flex items-center gap-2"
                   >
-                    {p.tagName}
-                  </span>
+                    <div
+                      className="w-2 h-2 rounded-full shrink-0"
+                      style={{ backgroundColor: tag.color || "#00d4ff" }}
+                    />
+                    <span className="text-[10px] text-hud-text">{tag.name}</span>
+                  </button>
+                ))}
+                {emailTag && (
+                  <button
+                    onClick={() => {
+                      onTagEmail(msg.id, msg.provider, null, null);
+                      setTagMenuId(null);
+                    }}
+                    className="w-full text-left px-3 py-1.5 hover:bg-hud-error/10 transition-colors flex items-center gap-2 border-t border-hud-border"
+                  >
+                    <X size={10} className="text-hud-error" />
+                    <span className="text-[10px] text-hud-error">Remove tag</span>
+                  </button>
                 )}
               </div>
-            </div>
-          </button>
+            )}
+          </div>
         );
       })}
     </div>

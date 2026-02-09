@@ -1,11 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { HudButton } from "@/components/ui/HudButton";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
-import { Send, Sparkles, X, Search } from "lucide-react";
+import { Send, Sparkles, X } from "lucide-react";
 
 interface ComposePaneProps {
   initialTo?: string;
@@ -17,24 +17,34 @@ export function ComposePane({ initialTo, initialSubject, onClearInitial }: Compo
   const [to, setTo] = useState(initialTo || "");
   const [subject, setSubject] = useState(initialSubject || "");
   const [body, setBody] = useState("");
-  const [contactQuery, setContactQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [showContacts, setShowContacts] = useState(false);
   const [aiSuggestion, setAiSuggestion] = useState<string | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useEffect(() => {
     if (initialTo) setTo(initialTo);
     if (initialSubject) setSubject(initialSubject);
   }, [initialTo, initialSubject]);
 
-  // Contact search
-  const { data: contactsData } = useQuery({
-    queryKey: ["email-contacts", contactQuery],
+  // Debounce contact search (300ms delay)
+  const updateContactQuery = (value: string) => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      setDebouncedQuery(value);
+    }, 300);
+  };
+
+  // Contact search — triggers on debounced query, min 1 character
+  const { data: contactsData, isFetching: contactsFetching } = useQuery({
+    queryKey: ["email-contacts", debouncedQuery],
     queryFn: async () => {
-      const res = await api.get<any>(`/email/search-contacts?q=${encodeURIComponent(contactQuery)}`);
+      const res = await api.get<any>(`/email/search-contacts?q=${encodeURIComponent(debouncedQuery)}`);
       if (!res.ok) return { contacts: [] };
       return res.data;
     },
-    enabled: contactQuery.length >= 2,
+    enabled: debouncedQuery.length >= 1,
+    staleTime: 30 * 1000,
   });
 
   const sendEmail = useMutation({
@@ -60,7 +70,8 @@ export function ComposePane({ initialTo, initialSubject, onClearInitial }: Compo
       return res.data!;
     },
     onSuccess: (data) => {
-      setAiSuggestion(data.response);
+      const text = typeof data?.response === "string" ? data.response : JSON.stringify(data?.response ?? "");
+      setAiSuggestion(text);
     },
   });
 
@@ -95,30 +106,40 @@ export function ComposePane({ initialTo, initialSubject, onClearInitial }: Compo
               value={to}
               onChange={(e) => {
                 setTo(e.target.value);
-                setContactQuery(e.target.value);
+                updateContactQuery(e.target.value);
                 setShowContacts(true);
               }}
               onBlur={() => setTimeout(() => setShowContacts(false), 200)}
-              onFocus={() => { if (contactQuery.length >= 2) setShowContacts(true); }}
+              onFocus={() => { if (to.length >= 1) setShowContacts(true); }}
               placeholder="recipient@email.com"
               className="w-full bg-hud-bg-secondary/50 border border-hud-border rounded-lg px-3 py-1.5 text-xs text-hud-text placeholder:text-hud-text-muted/50 focus:outline-none focus:border-hud-accent/50"
             />
-            {showContacts && contacts.length > 0 && (
-              <div className="absolute z-50 top-full mt-1 w-full bg-hud-bg border border-hud-border rounded-lg shadow-xl overflow-hidden">
-                {contacts.map((c: any) => (
-                  <button
-                    key={c.email}
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      setTo(c.email);
-                      setShowContacts(false);
-                    }}
-                    className="w-full text-left px-3 py-2 hover:bg-hud-accent/10 transition-colors"
-                  >
-                    <p className="text-xs text-hud-text">{c.name}</p>
-                    <p className="text-[10px] text-hud-text-muted">{c.email}</p>
-                  </button>
-                ))}
+            {showContacts && to.length >= 1 && (
+              <div className="absolute z-50 top-full mt-1 w-full bg-hud-bg border border-hud-border rounded-lg shadow-xl overflow-hidden max-h-48 overflow-y-auto">
+                {contactsFetching && contacts.length === 0 && (
+                  <div className="px-3 py-2 text-[10px] text-hud-text-muted">Searching...</div>
+                )}
+                {contacts.length > 0 ? (
+                  contacts.map((c: any) => (
+                    <button
+                      key={c.email}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        setTo(c.email);
+                        setShowContacts(false);
+                        setDebouncedQuery("");
+                      }}
+                      className="w-full text-left px-3 py-2 hover:bg-hud-accent/10 transition-colors border-b border-hud-border/30 last:border-b-0"
+                    >
+                      <p className="text-xs text-hud-text truncate">{c.name}</p>
+                      <p className="text-[10px] text-hud-text-muted truncate">{c.email}</p>
+                    </button>
+                  ))
+                ) : (
+                  !contactsFetching && debouncedQuery.length >= 1 && (
+                    <div className="px-3 py-2 text-[10px] text-hud-text-muted">No contacts found</div>
+                  )
+                )}
               </div>
             )}
           </div>
@@ -174,7 +195,21 @@ export function ComposePane({ initialTo, initialSubject, onClearInitial }: Compo
         </div>
       )}
 
-      {/* Actions */}
+      {/* AI Help — prominent button */}
+      <HudButton
+        size="lg"
+        onClick={() => aiAssist.mutate()}
+        disabled={aiAssist.isPending}
+        className="w-full justify-center py-3 text-sm mb-2"
+      >
+        {aiAssist.isPending ? <LoadingSpinner size="sm" /> : <Sparkles size={18} />}
+        AI Help
+      </HudButton>
+      {aiAssist.isError && (
+        <p className="text-xs text-hud-amber mb-2">{(aiAssist.error as Error).message}</p>
+      )}
+
+      {/* Send */}
       <div className="flex items-center gap-2">
         <HudButton
           size="sm"
@@ -184,23 +219,11 @@ export function ComposePane({ initialTo, initialSubject, onClearInitial }: Compo
           {sendEmail.isPending ? <LoadingSpinner size="sm" /> : <Send size={12} />}
           Send
         </HudButton>
-        <HudButton
-          size="sm"
-          variant="secondary"
-          onClick={() => aiAssist.mutate()}
-          disabled={aiAssist.isPending}
-        >
-          {aiAssist.isPending ? <LoadingSpinner size="sm" /> : <Sparkles size={12} />}
-          AI Help
-        </HudButton>
         {sendEmail.isSuccess && (
           <span className="text-[10px] text-hud-success">Sent!</span>
         )}
         {sendEmail.isError && (
           <span className="text-[10px] text-hud-error">{(sendEmail.error as Error).message}</span>
-        )}
-        {aiAssist.isError && (
-          <span className="text-[10px] text-hud-amber">{(aiAssist.error as Error).message}</span>
         )}
       </div>
     </div>
