@@ -1,9 +1,11 @@
 import { Router, Response } from "express";
 import { randomUUID } from "crypto";
+import { google } from "googleapis";
 import { authMiddleware } from "../middleware/auth";
 import { AuthRequest } from "../types";
 import { prisma } from "../services/prisma";
 import { gateway } from "../gateway/connection";
+import { getGoogleApiClient, getTokensForProvider } from "../services/oauth.service";
 
 // pdf-parse v1 is CJS-only
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -33,7 +35,7 @@ async function agentExec(prompt: string, timeoutMs = 60000) {
     {
       sessionKey,
       message: prompt,
-      deliver: "full",
+      deliver: true,
       thinking: "low",
       idempotencyKey: `composer-${Date.now()}-${randomUUID().slice(0, 8)}`,
     },
@@ -862,7 +864,78 @@ router.post("/people/search", async (req: AuthRequest, res: Response) => {
       return;
     }
 
-    // Search drafts for interactions
+    const contacts = new Map<string, { name: string; email: string; lastContact: string; interactionCount: number }>();
+    const recentEmails: { subject: string; from: string; date: string }[] = [];
+
+    // Search Gmail for actual email interactions
+    const googleTokens = await getTokensForProvider(userId, "google");
+    if (googleTokens) {
+      const oauth2Client = await getGoogleApiClient(userId);
+      if (oauth2Client) {
+        const gmail = google.gmail({ version: "v1", auth: oauth2Client });
+        try {
+          const searchRes = await gmail.users.messages.list({
+            userId: "me",
+            maxResults: 15,
+            q: `from:${query} OR to:${query}`,
+          });
+
+          for (const msg of searchRes.data.messages || []) {
+            try {
+              const detail = await gmail.users.messages.get({
+                userId: "me",
+                id: msg.id!,
+                format: "metadata",
+                metadataHeaders: ["From", "To", "Date", "Subject"],
+              });
+              const headers = detail.data.payload?.headers || [];
+              const from = headers.find((h) => h.name === "From")?.value || "";
+              const to = headers.find((h) => h.name === "To")?.value || "";
+              const date = headers.find((h) => h.name === "Date")?.value || "";
+              const subject = headers.find((h) => h.name === "Subject")?.value || "(No subject)";
+
+              recentEmails.push({
+                subject,
+                from,
+                date: date ? new Date(date).toISOString() : new Date().toISOString(),
+              });
+
+              // Extract contacts from From and To
+              const parseAddr = (s: string) => {
+                const match = s.match(/<([^>]+)>/);
+                const email = match ? match[1] : s.trim();
+                const name = match ? s.replace(/<[^>]+>/, "").trim().replace(/"/g, "") : "";
+                return { name: name || email, email: email.toLowerCase() };
+              };
+
+              for (const addr of [from, ...(to ? to.split(",") : [])]) {
+                if (!addr.trim()) continue;
+                const parsed = parseAddr(addr.trim());
+                if (!parsed.email.toLowerCase().includes(query.toLowerCase())) continue;
+                const existing = contacts.get(parsed.email);
+                if (existing) {
+                  existing.interactionCount++;
+                  if (date && new Date(date) > new Date(existing.lastContact)) {
+                    existing.lastContact = new Date(date).toISOString();
+                  }
+                } else {
+                  contacts.set(parsed.email, {
+                    name: parsed.name,
+                    email: parsed.email,
+                    lastContact: date ? new Date(date).toISOString() : new Date().toISOString(),
+                    interactionCount: 1,
+                  });
+                }
+              }
+            } catch {}
+          }
+        } catch (err: any) {
+          console.error("[Composer] Gmail people search error:", err.message);
+        }
+      }
+    }
+
+    // Also check local drafts
     const draftMatches = await prisma.draftReply.findMany({
       where: {
         userId,
@@ -872,63 +945,50 @@ router.post("/people/search", async (req: AuthRequest, res: Response) => {
         ],
       },
       orderBy: { createdAt: "desc" },
-      take: 10,
+      take: 5,
     });
 
-    // Build a summary prompt with what we have
-    const interactionData = draftMatches
-      .map(
-        (d) =>
-          `- Email from ${d.emailFrom}: "${d.emailSubject}" (${new Date(d.createdAt).toLocaleDateString()})`
-      )
-      .join("\n");
-
-    let summary = "";
-    if (interactionData) {
-      const prompt = `Based on these email interactions, provide a brief relationship summary for "${query}":
-
-${interactionData}
-
-Return a 2-3 sentence summary of the relationship and interaction history. If the data is limited, say so.`;
-
-      try {
-        const result = (await agentExec(prompt, 20000)) as any;
-        summary =
-          result?.text || result?.content || result?.message?.text || result?.message?.content || String(result || "");
-      } catch {
-        summary = "Could not generate relationship summary.";
-      }
-    }
-
-    // Extract unique contacts from matches
-    const contacts = new Map<string, { name: string; email: string; lastContact: string; interactionCount: number }>();
     for (const d of draftMatches) {
       const emailMatch = d.emailFrom.match(/<(.+?)>/);
       const email = emailMatch ? emailMatch[1] : d.emailFrom;
       const name = d.emailFrom.replace(/<.+?>/, "").trim() || email;
-
-      if (!contacts.has(email)) {
-        contacts.set(email, {
+      if (!contacts.has(email.toLowerCase())) {
+        contacts.set(email.toLowerCase(), {
           name,
-          email,
+          email: email.toLowerCase(),
           lastContact: d.createdAt.toISOString(),
-          interactionCount: 0,
+          interactionCount: 1,
         });
       }
-      const contact = contacts.get(email)!;
-      contact.interactionCount++;
+    }
+
+    // Build summary from interaction data
+    let summary = "";
+    const contactList = Array.from(contacts.values()).sort((a, b) => b.interactionCount - a.interactionCount);
+    if (recentEmails.length > 0) {
+      const interactionData = recentEmails.slice(0, 8).map(
+        (e) => `- "${e.subject}" from ${e.from} (${new Date(e.date).toLocaleDateString()})`
+      ).join("\n");
+
+      try {
+        const result = (await agentExec(
+          `Based on these email interactions, provide a brief 2-3 sentence relationship summary for "${query}":\n\n${interactionData}\n\nBe concise.`,
+          20000
+        )) as any;
+        summary = result?.text || result?.content || result?.message?.text || result?.message?.content || String(result || "");
+      } catch {
+        summary = `Found ${contactList.length} contact(s) with ${recentEmails.length} recent interactions.`;
+      }
+    } else if (contactList.length === 0) {
+      summary = "No email interactions found for this search.";
     }
 
     res.json({
       ok: true,
       data: {
         query,
-        contacts: Array.from(contacts.values()),
-        recentEmails: draftMatches.map((d) => ({
-          subject: d.emailSubject,
-          from: d.emailFrom,
-          date: d.createdAt.toISOString(),
-        })),
+        contacts: contactList,
+        recentEmails: recentEmails.slice(0, 10),
         summary,
       },
     });

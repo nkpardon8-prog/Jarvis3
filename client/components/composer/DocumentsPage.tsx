@@ -7,7 +7,7 @@ import {
   PenLine,
   Receipt,
   FileText,
-  Users,
+  Search,
 } from "lucide-react";
 import { DraftsTab } from "./DraftsTab";
 import { ComposeTab } from "./ComposeTab";
@@ -20,7 +20,7 @@ const SUB_TABS = [
   { key: "drafts", label: "Drafts", icon: FileEdit },
   { key: "invoices", label: "Invoices", icon: Receipt },
   { key: "pdfs", label: "PDFs", icon: FileText },
-  { key: "people", label: "People", icon: Users },
+  { key: "people", label: "Search", icon: Search },
 ] as const;
 
 type SubTab = (typeof SUB_TABS)[number]["key"];

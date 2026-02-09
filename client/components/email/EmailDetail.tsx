@@ -46,12 +46,14 @@ export function EmailDetail({ messageId, provider, onClose, onReply }: EmailDeta
   }
 
   const handleReply = () => {
-    // Extract email address from "Name <email>" format
     const fromMatch = data.from?.match(/<([^>]+)>/);
     const replyTo = fromMatch ? fromMatch[1] : data.from || "";
     const replySubject = data.subject?.startsWith("Re: ") ? data.subject : `Re: ${data.subject}`;
     onReply(replyTo, replySubject);
   };
+
+  const bodyContent = data.body || "";
+  const isHtml = /<[a-z][\s\S]*>/i.test(bodyContent);
 
   return (
     <div className="h-full flex flex-col">
@@ -78,29 +80,43 @@ export function EmailDetail({ messageId, provider, onClose, onReply }: EmailDeta
 
       {/* Body */}
       <div className="flex-1 overflow-y-auto">
-        <div className="text-xs text-hud-text-secondary leading-relaxed whitespace-pre-wrap break-words">
-          {stripHtml(data.body || "")}
-        </div>
+        {isHtml ? (
+          <div
+            className="email-body-html text-xs text-hud-text-secondary leading-relaxed"
+            dangerouslySetInnerHTML={{ __html: sanitizeEmailHtml(bodyContent) }}
+          />
+        ) : (
+          <div className="text-xs text-hud-text-secondary leading-relaxed whitespace-pre-wrap break-words">
+            {bodyContent}
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function stripHtml(html: string): string {
-  // Basic HTML stripping for email bodies
+/**
+ * Sanitize email HTML: strip scripts, event handlers, and dangerous elements
+ * while preserving layout, images, links, and formatting.
+ */
+function sanitizeEmailHtml(html: string): string {
   return html
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    // Remove script tags and their content
     .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p>/gi, "\n\n")
-    .replace(/<\/div>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+    // Remove style tags (we'll apply our own)
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    // Remove on* event handlers
+    .replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+    // Remove javascript: URLs
+    .replace(/href\s*=\s*"javascript:[^"]*"/gi, 'href="#"')
+    .replace(/href\s*=\s*'javascript:[^']*'/gi, "href='#'")
+    // Remove form elements
+    .replace(/<\/?form[\s\S]*?>/gi, "")
+    .replace(/<\/?input[\s\S]*?>/gi, "")
+    .replace(/<\/?button[\s\S]*?>/gi, "")
+    // Make links open in new tab
+    .replace(/<a\s/gi, '<a target="_blank" rel="noopener noreferrer" ')
+    // Remove iframes
+    .replace(/<iframe[\s\S]*?<\/iframe>/gi, "")
+    .replace(/<iframe[\s\S]*?\/?>/gi, "");
 }

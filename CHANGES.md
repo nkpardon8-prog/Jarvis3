@@ -4,6 +4,33 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-09 — Fix deliver param, people search, email body rendering, rename People to Search
+
+**Author:** Omid (via Claude Code)
+**Commit:** fix: deliver boolean, Gmail-based people search, HTML email rendering, People→Search
+**Branch:** oz/email-restructure-automation
+
+**What changed:**
+- **`deliver: "full"` → `deliver: true`** in all 4 agentExec helpers (composer, connections, integrations, calendar). Gateway protocol now requires boolean, not string. This was causing "invalid chat.send params: at /deliver: must be boolean" errors on all AI tools (composer, form builder, etc.).
+- **People search now queries Gmail directly** instead of only the empty DraftReply table. Searches `from:<query> OR to:<query>` in Gmail, extracts contacts from headers, and builds interaction history from real email data. Falls back to DraftReply for additional matches.
+- **Email body now renders HTML properly** using `dangerouslySetInnerHTML` with sanitization (strips scripts, event handlers, iframes, forms, javascript: URLs) instead of regex-based HTML stripping that mangled formatting. Added `.email-body-html` CSS styles for links, images, tables, blockquotes.
+- **Renamed "People" tab to "Search"** in DocumentsPage sub-tabs.
+- Added `googleapis` and `oauth.service` imports to composer routes for Gmail access.
+
+**Why:**
+- Gateway protocol change broke all AI tools. People search was useless without real email data. Email bodies were unreadable due to aggressive HTML stripping.
+
+**Files touched:**
+- `server/src/routes/composer.ts` — deliver fix + Gmail-based people search + imports
+- `server/src/routes/connections.ts` — deliver fix
+- `server/src/routes/calendar.ts` — deliver fix
+- `server/src/routes/integrations.ts` — deliver fix
+- `client/components/email/EmailDetail.tsx` — HTML rendering with sanitization
+- `client/components/composer/DocumentsPage.tsx` — People→Search rename
+- `client/app/globals.css` — email HTML body styles
+
+---
+
 ## 2026-02-09 — Restructure Email + Documents with Automation AI Lane
 
 **Author:** Omid (via Claude Code)

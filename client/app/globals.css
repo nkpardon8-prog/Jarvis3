@@ -222,3 +222,45 @@ input:focus, textarea:focus, select:focus {
     box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.3);
   }
 }
+
+/* Email HTML body rendering */
+.email-body-html {
+  color: #8892a4;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+.email-body-html img {
+  max-width: 100%;
+  height: auto;
+}
+.email-body-html a {
+  color: #00d4ff;
+  text-decoration: underline;
+}
+.email-body-html table {
+  border-collapse: collapse;
+  max-width: 100%;
+}
+.email-body-html td,
+.email-body-html th {
+  padding: 4px 8px;
+}
+.email-body-html blockquote {
+  border-left: 2px solid rgba(0, 212, 255, 0.2);
+  margin-left: 0;
+  padding-left: 12px;
+  color: #4a5568;
+}
+.email-body-html h1,
+.email-body-html h2,
+.email-body-html h3 {
+  color: #e8edf5;
+  margin-top: 8px;
+  margin-bottom: 4px;
+}
+.email-body-html p {
+  margin-bottom: 8px;
+}
+.email-body-html * {
+  max-width: 100%;
+}

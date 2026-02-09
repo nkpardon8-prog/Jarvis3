@@ -63,7 +63,7 @@ router.post("/build-agenda", async (req: AuthRequest, res: Response) => {
         sessionKey: "agent:main:main",
         message: prompt,
         thinking: "low",
-        deliver: "full",
+        deliver: true,
         idempotencyKey: `agenda-${Date.now()}`,
       },
       60000

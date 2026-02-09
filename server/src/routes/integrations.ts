@@ -155,7 +155,7 @@ async function agentExec(
     {
       sessionKey,
       message: prompt,
-      deliver: "full",
+      deliver: true,
       thinking: "low",
       idempotencyKey: `integration-${Date.now()}-${randomUUID().slice(0, 8)}`,
     },
