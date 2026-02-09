@@ -24,10 +24,7 @@ const BATCH_LIMIT = 10;
  * all recent messages with the current tag set. No batch limit.
  * Returns the number of emails processed.
  */
-export async function retagAllEmails(userId: string, messages: EmailMessage[]): Promise<number> {
-  // Clear all existing tag assignments for this user
-  await prisma.processedEmail.deleteMany({ where: { userId } });
-
+export async function retagAllEmails(userId: string, messages: EmailMessage[], onProgress?: (count: number) => void): Promise<number> {
   // Filter to 30-day window
   const cutoff = Date.now() - THIRTY_DAYS_MS;
   const recent = messages.filter((m) => new Date(m.date).getTime() > cutoff);
@@ -55,18 +52,35 @@ export async function retagAllEmails(userId: string, messages: EmailMessage[]): 
     tagNames.push("Miscellaneous");
   }
 
+  // Build tag reference with descriptions/criteria for the AI
+  const tagReference = tags.map((t) => {
+    let entry = `- "${t.name}"`;
+    if (t.criteria) entry += `: ${t.criteria}`;
+    else if (t.description) entry += `: ${t.description}`;
+    return entry;
+  }).join("\n");
+
+  const systemPrompt = `You are an expert email classifier. Your job is to analyze emails and assign each one to the single most appropriate tag based on the sender, subject, and content.
+
+Rules:
+- You MUST return ONLY valid JSON with no markdown, no code fences, no explanation.
+- The JSON format is: { "summary": "<one concise sentence describing the email>", "tag": "<exact tag name>" }
+- Choose the tag whose criteria best matches the email. Consider the sender's identity/domain, the subject line, and the email content.
+- If no tag is a clear match, use "Miscellaneous".
+- The tag name must exactly match one of the available tags (case-insensitive matching is OK).
+
+Available tags:
+${tagReference}`;
+
   let processed = 0;
   for (const email of recent) {
     try {
-      const prompt = `Analyze this email and return ONLY valid JSON (no markdown, no code fences): { "summary": "<one concise sentence>", "tag": "<best matching tag name>" }
-Available tags: ${tagNames.join(", ")}
-If no tag fits well, use "Miscellaneous".
-
-From: ${email.from}
+      const prompt = `From: ${email.from}
 Subject: ${email.subject}
-Snippet: ${email.snippet}`;
+Date: ${email.date}
+Content: ${email.snippet}`;
 
-      const result = await automationExec(userId, prompt);
+      const result = await automationExec(userId, prompt, { skipRateLimit: true, systemPrompt });
 
       let parsed: { summary?: string; tag?: string };
       try {
@@ -80,8 +94,16 @@ Snippet: ${email.snippet}`;
       const tagName = parsed.tag || "Miscellaneous";
       const matchedTag = tags.find((t) => t.name.toLowerCase() === tagName.toLowerCase());
 
-      await prisma.processedEmail.create({
-        data: {
+      // Upsert: update existing record in-place, or create new — tags stay visible during retagging
+      await prisma.processedEmail.upsert({
+        where: { userId_emailId: { userId, emailId: email.id } },
+        update: {
+          summary,
+          tagId: matchedTag?.id || null,
+          tagName: matchedTag?.name || tagName,
+          processedAt: new Date(),
+        },
+        create: {
           userId,
           emailId: email.id,
           provider: email.provider,
@@ -91,6 +113,7 @@ Snippet: ${email.snippet}`;
         },
       });
       processed++;
+      onProgress?.(processed);
     } catch (err: any) {
       if (err instanceof AutomationNotConfiguredError) {
         throw err; // Propagate so the endpoint can return a useful error
@@ -144,17 +167,33 @@ export async function processNewEmails(userId: string, messages: EmailMessage[])
     tagNames.push("Miscellaneous");
   }
 
+  // Build tag reference with descriptions/criteria
+  const tagRef = tags.map((t) => {
+    let entry = `- "${t.name}"`;
+    if (t.criteria) entry += `: ${t.criteria}`;
+    else if (t.description) entry += `: ${t.description}`;
+    return entry;
+  }).join("\n");
+
+  const sysPrompt = `You are an expert email classifier. Analyze each email and assign it to the single most appropriate tag based on the sender, subject, and content.
+
+Rules:
+- Return ONLY valid JSON: { "summary": "<one sentence>", "tag": "<exact tag name>" }
+- No markdown, no code fences, no explanation.
+- Consider the sender's identity/domain, subject line, and content.
+- If no tag clearly fits, use "Miscellaneous".
+
+Available tags:
+${tagRef}`;
+
   for (const email of batch) {
     try {
-      const prompt = `Analyze this email and return ONLY valid JSON (no markdown, no code fences): { "summary": "<one concise sentence>", "tag": "<best matching tag name>" }
-Available tags: ${tagNames.join(", ")}
-If no tag fits well, use "Miscellaneous".
-
-From: ${email.from}
+      const prompt = `From: ${email.from}
 Subject: ${email.subject}
-Snippet: ${email.snippet}`;
+Date: ${email.date}
+Content: ${email.snippet}`;
 
-      const result = await automationExec(userId, prompt);
+      const result = await automationExec(userId, prompt, { systemPrompt: sysPrompt });
 
       // Parse JSON from response (handle potential markdown fences)
       let parsed: { summary?: string; tag?: string };

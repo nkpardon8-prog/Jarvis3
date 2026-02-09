@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { GlassPanel } from "@/components/ui/GlassPanel";
@@ -9,6 +9,8 @@ import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import {
   Check,
   ChevronDown,
+  ChevronUp,
+  Settings,
   Trash2,
   Zap,
 } from "lucide-react";
@@ -44,6 +46,9 @@ export function AutomationAICard() {
   const [modelId, setModelId] = useState(AUTOMATION_PROVIDERS.openai.models[0].id);
   const [apiKey, setApiKey] = useState("");
   const [showForm, setShowForm] = useState(false);
+  const [perMin, setPerMin] = useState(20);
+  const [perHour, setPerHour] = useState(200);
+  const [showRateLimits, setShowRateLimits] = useState(false);
 
   const { data, isLoading } = useQuery({
     queryKey: ["automation-settings"],
@@ -84,6 +89,26 @@ export function AutomationAICard() {
       queryClient.invalidateQueries({ queryKey: ["automation-settings"] });
     },
   });
+
+  const rateLimitMutation = useMutation({
+    mutationFn: async () => {
+      const res = await api.patch("/automation/settings", {
+        rateLimitPerMin: perMin,
+        rateLimitPerHour: perHour,
+      });
+      if (!res.ok) throw new Error(res.error || "Failed to update rate limits");
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["automation-settings"] });
+    },
+  });
+
+  // Sync rate limit state when data loads
+  useEffect(() => {
+    if (data?.rateLimitPerMin) setPerMin(data.rateLimitPerMin);
+    if (data?.rateLimitPerHour) setPerHour(data.rateLimitPerHour);
+  }, [data?.rateLimitPerMin, data?.rateLimitPerHour]);
 
   if (isLoading) {
     return (
@@ -155,6 +180,65 @@ export function AutomationAICard() {
           )}
           {testMutation.isError && (
             <span className="text-[10px] text-hud-error">{(testMutation.error as Error).message}</span>
+          )}
+        </div>
+      )}
+
+      {/* Rate limit controls (collapsible) */}
+      {configured && !showForm && (
+        <div className="mt-3">
+          <button
+            onClick={() => setShowRateLimits(!showRateLimits)}
+            className="flex items-center gap-1.5 text-[10px] text-hud-text-muted hover:text-hud-text transition-colors"
+          >
+            <Settings size={11} />
+            Rate Limits
+            {showRateLimits ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+          </button>
+
+          {showRateLimits && (
+            <div className="mt-2 pt-2 border-t border-hud-border space-y-2">
+              <div className="flex items-center gap-3">
+                <div className="flex-1">
+                  <label className="text-[10px] text-hud-text-muted mb-0.5 block">Per minute</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={perMin}
+                    onChange={(e) => setPerMin(Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 1)))}
+                    className="w-full bg-hud-bg-secondary/50 border border-hud-border rounded-lg px-2 py-1 text-xs text-hud-text focus:outline-none focus:border-hud-accent/50 font-mono"
+                  />
+                </div>
+                <div className="flex-1">
+                  <label className="text-[10px] text-hud-text-muted mb-0.5 block">Per hour</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={1000}
+                    value={perHour}
+                    onChange={(e) => setPerHour(Math.max(1, Math.min(1000, parseInt(e.target.value, 10) || 1)))}
+                    className="w-full bg-hud-bg-secondary/50 border border-hud-border rounded-lg px-2 py-1 text-xs text-hud-text focus:outline-none focus:border-hud-accent/50 font-mono"
+                  />
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <HudButton
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => rateLimitMutation.mutate()}
+                  disabled={rateLimitMutation.isPending}
+                >
+                  {rateLimitMutation.isPending ? <LoadingSpinner size="sm" /> : "Save Limits"}
+                </HudButton>
+                {rateLimitMutation.isSuccess && (
+                  <span className="text-[10px] text-hud-success">Saved</span>
+                )}
+                {rateLimitMutation.isError && (
+                  <span className="text-[10px] text-hud-error">{(rateLimitMutation.error as Error).message}</span>
+                )}
+              </div>
+            </div>
           )}
         </div>
       )}

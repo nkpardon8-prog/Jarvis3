@@ -11,6 +11,95 @@ const router = Router();
 
 router.use(authMiddleware);
 
+// ─── In-memory contact cache (per user) ─────────────────────
+// Populated once from the user's full Gmail history, then filtered locally per keystroke.
+// Refreshes every 10 minutes so new contacts appear.
+
+interface CachedContact { name: string; email: string }
+interface ContactCache { contacts: CachedContact[]; builtAt: number; building: boolean }
+const contactCacheMap = new Map<string, ContactCache>();
+const CONTACT_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+
+async function buildContactCache(userId: string): Promise<CachedContact[]> {
+  const existing = contactCacheMap.get(userId);
+  if (existing && (Date.now() - existing.builtAt < CONTACT_CACHE_TTL)) return existing.contacts;
+  if (existing?.building) return existing.contacts; // return stale while rebuilding
+
+  // Mark as building
+  if (existing) existing.building = true;
+  else contactCacheMap.set(userId, { contacts: [], builtAt: 0, building: true });
+
+  try {
+    const oauth2Client = await getGoogleApiClient(userId);
+    if (!oauth2Client) return [];
+
+    const gmail = google.gmail({ version: "v1", auth: oauth2Client });
+    const seen = new Set<string>();
+    const contacts: CachedContact[] = [];
+
+    // Paginate through recent messages (up to 500) to extract all contacts
+    let pageToken: string | undefined;
+    let fetched = 0;
+    const MAX_MESSAGES = 500;
+
+    while (fetched < MAX_MESSAGES) {
+      const listRes = await gmail.users.messages.list({
+        userId: "me",
+        maxResults: Math.min(100, MAX_MESSAGES - fetched),
+        pageToken,
+      });
+
+      const msgs = listRes.data.messages || [];
+      if (msgs.length === 0) break;
+
+      // Fetch metadata in parallel batches of 25
+      for (let i = 0; i < msgs.length; i += 25) {
+        const batch = msgs.slice(i, i + 25);
+        const results = await Promise.allSettled(
+          batch.map((m) =>
+            gmail.users.messages.get({
+              userId: "me",
+              id: m.id!,
+              format: "metadata",
+              metadataHeaders: ["From", "To", "Cc"],
+            })
+          )
+        );
+
+        for (const r of results) {
+          if (r.status !== "fulfilled") continue;
+          const headers = r.value.data.payload?.headers || [];
+          const from = headers.find((h) => h.name === "From")?.value || "";
+          const toH = headers.find((h) => h.name === "To")?.value || "";
+          const ccH = headers.find((h) => h.name === "Cc")?.value || "";
+
+          for (const addr of [from, ...(toH ? toH.split(",") : []), ...(ccH ? ccH.split(",") : [])]) {
+            if (!addr.trim()) continue;
+            const angleMatch = addr.match(/<([^>]+)>/);
+            const email = (angleMatch ? angleMatch[1] : addr.trim()).toLowerCase();
+            if (!email.includes("@") || seen.has(email)) continue;
+            seen.add(email);
+            const name = angleMatch ? addr.replace(/<[^>]+>/, "").trim().replace(/"/g, "") : "";
+            contacts.push({ name: name || email, email });
+          }
+        }
+      }
+
+      fetched += msgs.length;
+      pageToken = listRes.data.nextPageToken || undefined;
+      if (!pageToken) break;
+    }
+
+    contactCacheMap.set(userId, { contacts, builtAt: Date.now(), building: false });
+    return contacts;
+  } catch (err) {
+    console.error("[Email] Contact cache build error:", err);
+    const fallback = contactCacheMap.get(userId);
+    if (fallback) fallback.building = false;
+    return fallback?.contacts || [];
+  }
+}
+
 // ─── Email connection status ──────────────────────────────
 
 router.get("/status", async (req: AuthRequest, res: Response) => {
@@ -405,11 +494,22 @@ router.get("/email-tags", async (req: AuthRequest, res: Response) => {
 
 // ─── Auto-tag all emails ────────────────────────────────────────
 
+// In-memory auto-tag job status per user
+interface AutoTagJob { status: "running" | "done" | "error"; processed: number; total: number; error?: string }
+const autoTagJobs = new Map<string, AutoTagJob>();
+
 router.post("/auto-tag", async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.userId;
 
-    // Fetch current inbox messages (reuse existing fetch logic)
+    // If already running, reject
+    const existing = autoTagJobs.get(userId);
+    if (existing?.status === "running") {
+      res.json({ ok: true, data: { status: "running", processed: existing.processed, total: existing.total } });
+      return;
+    }
+
+    // Validate upfront before going async
     const googleTokens = await getTokensForProvider(userId, "google");
     const msTokens = await getTokensForProvider(userId, "microsoft");
 
@@ -418,43 +518,79 @@ router.post("/auto-tag", async (req: AuthRequest, res: Response) => {
       return;
     }
 
-    const messages: EmailMessage[] = [];
+    // Initialize job and respond immediately
+    autoTagJobs.set(userId, { status: "running", processed: 0, total: 0 });
+    res.json({ ok: true, data: { status: "running", processed: 0, total: 0 } });
 
-    const now = new Date();
-    const thirtyDaysAgo = new Date(now);
-    thirtyDaysAgo.setMonth(thirtyDaysAgo.getMonth() - 1);
-
-    if (googleTokens) {
+    // Run in background — not awaited
+    (async () => {
       try {
-        const gmailMessages = await fetchGmailMessages(userId, googleTokens.accessToken, 200, thirtyDaysAgo, now);
-        messages.push(...gmailMessages);
+        const messages: EmailMessage[] = [];
+        const now = new Date();
+        const thirtyDaysAgo = new Date(now);
+        thirtyDaysAgo.setMonth(thirtyDaysAgo.getMonth() - 1);
+
+        if (googleTokens) {
+          try {
+            const gmailMessages = await fetchGmailMessages(userId, googleTokens.accessToken, 200, thirtyDaysAgo, now);
+            messages.push(...gmailMessages);
+          } catch (err: any) {
+            console.error("[AutoTag] Gmail fetch error:", err.message);
+          }
+        }
+
+        if (msTokens) {
+          try {
+            const outlookMessages = await fetchOutlookMessages(msTokens.accessToken, 200, thirtyDaysAgo, now);
+            messages.push(...outlookMessages);
+          } catch (err: any) {
+            console.error("[AutoTag] Outlook fetch error:", err.message);
+          }
+        }
+
+        const job = autoTagJobs.get(userId)!;
+        job.total = messages.length;
+
+        if (messages.length === 0) {
+          job.status = "done";
+          return;
+        }
+
+        const processed = await retagAllEmails(userId, messages, (count) => {
+          job.processed = count;
+        });
+        job.processed = processed;
+        job.status = "done";
       } catch (err: any) {
-        console.error("[AutoTag] Gmail fetch error:", err.message);
+        const job = autoTagJobs.get(userId);
+        if (job) {
+          job.status = "error";
+          job.error = err.message;
+        }
+        console.error("[AutoTag] Background job error:", err.message);
       }
-    }
-
-    if (msTokens) {
-      try {
-        const outlookMessages = await fetchOutlookMessages(msTokens.accessToken, 200, thirtyDaysAgo, now);
-        messages.push(...outlookMessages);
-      } catch (err: any) {
-        console.error("[AutoTag] Outlook fetch error:", err.message);
-      }
-    }
-
-    if (messages.length === 0) {
-      res.json({ ok: true, data: { processed: 0, message: "No messages to tag." } });
-      return;
-    }
-
-    const processed = await retagAllEmails(userId, messages);
-    res.json({ ok: true, data: { processed, total: messages.length } });
+    })();
   } catch (err: any) {
     if (err instanceof AutomationNotConfiguredError) {
       res.status(400).json({ ok: false, error: err.message });
       return;
     }
     res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── Auto-tag job status (poll) ──────────────────────────────
+router.get("/auto-tag/status", async (req: AuthRequest, res: Response) => {
+  const userId = req.user!.userId;
+  const job = autoTagJobs.get(userId);
+  if (!job) {
+    res.json({ ok: true, data: { status: "idle" } });
+    return;
+  }
+  res.json({ ok: true, data: job });
+  // Clean up finished jobs after client reads them
+  if (job.status === "done" || job.status === "error") {
+    autoTagJobs.delete(userId);
   }
 });
 
@@ -676,7 +812,7 @@ router.get("/message/:id", async (req: AuthRequest, res: Response) => {
 router.get("/search-contacts", async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.userId;
-    const query = String(req.query.q || "").trim();
+    const query = String(req.query.q || "").trim().toLowerCase();
 
     if (!query) {
       res.json({ ok: true, data: { contacts: [] } });
@@ -689,66 +825,45 @@ router.get("/search-contacts", async (req: AuthRequest, res: Response) => {
       return;
     }
 
-    const oauth2Client = await getGoogleApiClient(userId);
-    if (!oauth2Client) {
-      res.json({ ok: true, data: { contacts: [] } });
-      return;
-    }
+    // Build or retrieve the full contact cache for this user
+    const allContacts = await buildContactCache(userId);
 
-    const gmail = google.gmail({ version: "v1", auth: oauth2Client });
+    // Filter locally: match query against email and name, letter by letter
+    const matches = allContacts.filter((c) =>
+      c.email.includes(query) || c.name.toLowerCase().includes(query)
+    );
 
-    // Search the entire account for emails matching the query
-    const listRes = await gmail.users.messages.list({
-      userId: "me",
-      maxResults: 30,
-      q: `from:${query} OR to:${query}`,
+    // Sort by relevance: prefix on local part > prefix on name > prefix on full email > contains
+    matches.sort((a, b) => {
+      const aLocal = a.email.split("@")[0];
+      const bLocal = b.email.split("@")[0];
+      const aName = a.name.toLowerCase();
+      const bName = b.name.toLowerCase();
+
+      // Tier 0: local part (before @) starts with query
+      const t0a = aLocal.startsWith(query) ? 0 : 1;
+      const t0b = bLocal.startsWith(query) ? 0 : 1;
+      if (t0a !== t0b) return t0a - t0b;
+
+      // Tier 1: name starts with query
+      const t1a = aName.startsWith(query) ? 0 : 1;
+      const t1b = bName.startsWith(query) ? 0 : 1;
+      if (t1a !== t1b) return t1a - t1b;
+
+      // Tier 2: full email starts with query
+      const t2a = a.email.startsWith(query) ? 0 : 1;
+      const t2b = b.email.startsWith(query) ? 0 : 1;
+      if (t2a !== t2b) return t2a - t2b;
+
+      // Tier 3: local part contains query (closer to start = better)
+      const posA = aLocal.indexOf(query);
+      const posB = bLocal.indexOf(query);
+      if (posA !== posB) return posA - posB;
+
+      return a.email.localeCompare(b.email);
     });
 
-    const msgs = listRes.data.messages || [];
-    if (msgs.length === 0) {
-      res.json({ ok: true, data: { contacts: [] } });
-      return;
-    }
-
-    // Fetch metadata in parallel (batches of 15)
-    const seen = new Set<string>();
-    const contacts: { name: string; email: string }[] = [];
-    const queryLower = query.toLowerCase();
-
-    for (let i = 0; i < msgs.length; i += 15) {
-      const batch = msgs.slice(i, i + 15);
-      const results = await Promise.allSettled(
-        batch.map((m) =>
-          gmail.users.messages.get({
-            userId: "me",
-            id: m.id!,
-            format: "metadata",
-            metadataHeaders: ["From", "To"],
-          })
-        )
-      );
-
-      for (const r of results) {
-        if (r.status !== "fulfilled") continue;
-        const headers = r.value.data.payload?.headers || [];
-        const from = headers.find((h) => h.name === "From")?.value || "";
-        const to = headers.find((h) => h.name === "To")?.value || "";
-
-        for (const addr of [from, ...(to ? to.split(",") : [])]) {
-          if (!addr.trim()) continue;
-          const match = addr.match(/<([^>]+)>/);
-          const email = (match ? match[1] : addr.trim()).toLowerCase();
-          if (seen.has(email)) continue;
-          // Only include contacts that match the query
-          const name = match ? addr.replace(/<[^>]+>/, "").trim().replace(/"/g, "") : "";
-          if (!email.includes(queryLower) && !name.toLowerCase().includes(queryLower)) continue;
-          seen.add(email);
-          contacts.push({ name: name || email, email });
-        }
-      }
-    }
-
-    res.json({ ok: true, data: { contacts: contacts.slice(0, 15) } });
+    res.json({ ok: true, data: { contacts: matches.slice(0, 15) } });
   } catch (err: any) {
     res.status(500).json({ ok: false, error: err.message });
   }

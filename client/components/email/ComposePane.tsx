@@ -28,15 +28,15 @@ export function ComposePane({ initialTo, initialSubject, onClearInitial }: Compo
     if (initialSubject) setSubject(initialSubject);
   }, [initialTo, initialSubject]);
 
-  // Debounce contact search (300ms delay)
+  // Debounce contact search (150ms delay for responsive letter-by-letter)
   const updateContactQuery = (value: string) => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       setDebouncedQuery(value);
-    }, 300);
+    }, 150);
   };
 
-  // Contact search — triggers on debounced query, min 2 characters
+  // Contact search — triggers on debounced query, min 1 character
   const { data: contactsData, isFetching: contactsFetching } = useQuery({
     queryKey: ["email-contacts", debouncedQuery],
     queryFn: async () => {
@@ -44,8 +44,8 @@ export function ComposePane({ initialTo, initialSubject, onClearInitial }: Compo
       if (!res.ok) return { contacts: [] };
       return res.data;
     },
-    enabled: debouncedQuery.length >= 2,
-    staleTime: 30 * 1000,
+    enabled: debouncedQuery.length >= 1,
+    staleTime: 60 * 1000,
   });
 
   const sendEmail = useMutation({
@@ -128,11 +128,11 @@ export function ComposePane({ initialTo, initialSubject, onClearInitial }: Compo
                 setShowContacts(true);
               }}
               onBlur={() => setTimeout(() => setShowContacts(false), 200)}
-              onFocus={() => { if (to.length >= 2) setShowContacts(true); }}
+              onFocus={() => { if (to.length >= 1) setShowContacts(true); }}
               placeholder="recipient@email.com"
               className="w-full bg-hud-bg-secondary/50 border border-hud-border rounded-lg px-3 py-1.5 text-xs text-hud-text placeholder:text-hud-text-muted/50 focus:outline-none focus:border-hud-accent/50"
             />
-            {showContacts && to.length >= 2 && (
+            {showContacts && to.length >= 1 && (
               <div className="absolute z-50 top-full mt-1 w-full bg-hud-bg border border-hud-border rounded-lg shadow-xl overflow-hidden max-h-48 overflow-y-auto">
                 {contactsFetching && contacts.length === 0 && (
                   <div className="px-3 py-2 text-[10px] text-hud-text-muted">Searching...</div>
@@ -154,7 +154,7 @@ export function ComposePane({ initialTo, initialSubject, onClearInitial }: Compo
                     </button>
                   ))
                 ) : (
-                  !contactsFetching && debouncedQuery.length >= 2 && (
+                  !contactsFetching && debouncedQuery.length >= 1 && (
                     <div className="px-3 py-2 text-[10px] text-hud-text-muted">No contacts found</div>
                   )
                 )}

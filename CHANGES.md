@@ -4,6 +4,36 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-09 — Rate limits, contact cache, background auto-tag, AI classification overhaul
+
+**Author:** Omid (via Claude Code)
+**Commit:** feat: adjustable rate limits, local contact cache, background auto-tag, improved AI classification
+**Branch:** oz/email-restructure-automation
+
+**What changed:**
+- **Adjustable rate limits** — Added `rateLimitPerMin` and `rateLimitPerHour` to AutomationSettings Prisma model (defaults: 20/min, 200/hour). New PATCH endpoint to update limits without re-entering API key. Collapsible "Rate Limits" UI in AutomationAICard on Connections page. Service reads limits from DB per-user. Clamped to sane bounds (1–100/min, 1–1000/hour).
+- **Local contact cache for letter-by-letter search** — Replaced per-keystroke Gmail API search with an in-memory contact cache per user. Cache scans up to 500 recent messages (From/To/Cc headers) on first search, refreshes every 10 minutes. Each keystroke filters locally with prefix-priority sorting (local part prefix > name prefix > full email prefix > substring position). Minimum 1 character, 150ms debounce.
+- **Background auto-tag with live progress** — Re-tag All now fires-and-forget: server responds immediately, runs in background. New `GET /auto-tag/status` poll endpoint returns `{ status, processed, total }`. UI polls every 3 seconds with a progress bar and percentage. Tags update in real time (invalidates email-tags query on every poll tick). Message: "You can close this page — tagging continues in the background."
+- **Tags don't disappear during retag** — Replaced `deleteMany` + `create` with `upsert` so existing tags stay visible and update in-place as each email is reprocessed.
+- **Auto-tag processes all emails** — `retagAllEmails` calls `automationExec` with `skipRateLimit: true` so background jobs aren't blocked by per-minute caps.
+- **Improved AI classification** — Added system prompt support to all three providers (OpenAI, Anthropic, Google). Email classifier now gets a dedicated system prompt with role definition, rules, and full tag reference including descriptions/criteria. User prompt includes sender, subject, date, and content.
+- **AI Help for tag classification** — Green "AI Help — Write Classification" button in tag create/edit form. Sends tag name + existing criteria to automation AI, shows suggestion with Use/Dismiss. Clears on form reset.
+
+**Why:**
+- Rate limits were hardcoded and couldn't be adjusted per user. Contact search relied on Gmail's word-based search which failed for partial/random letter queries. Auto-tag blocked the HTTP response for minutes and tags disappeared during the process. The classification prompt was minimal — no system prompt, no tag descriptions, no sender context.
+
+**Files touched:**
+- `server/prisma/schema.prisma` — Added `rateLimitPerMin`, `rateLimitPerHour` to AutomationSettings
+- `server/src/services/automation.service.ts` — Per-user rate limiting from DB, `skipRateLimit` opt, system prompt support for all 3 providers
+- `server/src/services/email-intelligence.service.ts` — System prompt with tag criteria, upsert instead of delete+create, `onProgress` callback, `skipRateLimit` for bulk jobs
+- `server/src/routes/automation.ts` — PATCH /settings for rate limits, rate limit fields in GET/POST, 429 responses
+- `server/src/routes/email.ts` — In-memory contact cache (500 msgs, 10min TTL), background auto-tag with job status tracking, GET /auto-tag/status poll endpoint
+- `client/components/email/ComposePane.tsx` — 1-char min search, 150ms debounce
+- `client/components/email/TagManager.tsx` — AI Help button (green), auto-tag polling with live progress bar, real-time tag invalidation
+- `client/components/connections/AutomationAICard.tsx` — Collapsible rate limit controls with save
+
+---
+
 ## 2026-02-09 — Eager email prefetch, infinite scroll, drafts, full-account contact search
 
 **Author:** Omid (via Claude Code)
