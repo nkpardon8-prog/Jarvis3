@@ -4,6 +4,60 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-09 — Restructure Email + Documents with Automation AI Lane
+
+**Author:** Omid (via Claude Code)
+**Commit:** feat: split Email into dedicated tab, rename Composer to Documents, add Automation AI lane
+**Branch:** oz/email-restructure-automation
+
+**What changed:**
+
+- **Prisma schema**: Added 3 new models — `AutomationSettings` (per-user encrypted API key for cheap LLM), `ProcessedEmail` (AI summaries + tag assignments, idempotent via `@@unique([userId, emailId])`), `EmailContent` (cached full email bodies). Added relations to `User` model.
+- **`server/src/services/automation.service.ts`** (new): Direct HTTP calls to OpenAI, Anthropic, and Google AI APIs for automation workloads. `automationExec(userId, prompt)` decrypts per-user API key and routes to the correct provider. 30s timeout. Throws `AutomationNotConfiguredError` for graceful degradation.
+- **`server/src/services/email-intelligence.service.ts`** (new): Fire-and-forget email processing pipeline. `processNewEmails()` filters to 30-day window, batches 10 unprocessed emails, generates AI summaries + tag assignments via automation lane, stores in `ProcessedEmail`. Idempotent — skips already-processed emails. Ensures "Miscellaneous" system tag exists.
+- **`server/src/routes/automation.ts`** (new): CRUD for automation settings (`GET/POST/DELETE /api/automation/settings`), connection test (`POST /api/automation/test`), general-purpose AI assist (`POST /api/automation/assist`). API key encrypted via `crypto.service.ts`.
+- **`server/src/routes/email.ts`**: Added `POST /send` (Gmail RFC 2822 + Microsoft Graph sendMail), `GET /message/:id` (full body fetch with `EmailContent` cache), `GET /search-contacts` (sent+received contact dedup from Gmail), `GET /processed` (processed email data by IDs). Inbox endpoint now triggers fire-and-forget intelligence pipeline and supports `?withProcessed=true` to return summaries/tags inline.
+- **`server/src/routes/composer.ts`**: Added "Miscellaneous" to `SYSTEM_TAGS` for fallback classification.
+- **`server/src/index.ts`**: Mounted `/api/automation` routes.
+- **`client/components/layout/TabNavigation.tsx`**: Added Email tab (Mail icon), renamed Composer to Documents (FileText icon). Tab order: Home, Connections, Calendar, CRM, Email, Documents, Chat, Skills.
+- **`client/app/dashboard/email/page.tsx`**: Changed from redirect to rendering `<EmailPage />`.
+- **`client/app/dashboard/documents/page.tsx`** (new): Renders `<DocumentsPage />`.
+- **`client/app/dashboard/composer/page.tsx`**: Changed to redirect to `/dashboard/documents`.
+- **`client/components/email/EmailPage.tsx`**: Complete rewrite — split layout with email list (left) and compose/detail pane (right). Tag filter buttons, unread filter, compact provider indicator, collapsible tag manager. Triggers intelligence pipeline via `withProcessed=true`.
+- **`client/components/email/EmailList.tsx`** (new): Scrollable email list with AI summaries, tag badges, unread dots, sender extraction, relative dates, filter support.
+- **`client/components/email/EmailDetail.tsx`** (new): Full email body view fetched via `GET /message/:id`, reply button pre-fills compose pane, HTML stripping for display.
+- **`client/components/email/ComposePane.tsx`** (new): Email compose with contact search autocomplete, send via `POST /send`, AI compose help via automation lane, suggestion accept/dismiss.
+- **`client/components/composer/DocumentsPage.tsx`** (new): Composer without Inbox sub-tab, renamed to "Documents", defaults to Compose tab. 5 sub-tabs: Compose, Drafts, Invoices, PDFs, People.
+- **`client/components/connections/AutomationAICard.tsx`** (new): Provider/model/API key config UI for automation lane. Supports OpenAI (gpt-4o-mini, gpt-4.1-mini, gpt-4.1-nano), Anthropic (claude-haiku-4-5, claude-3-5-haiku), Google (gemini-2.0-flash-lite, gemini-2.0-flash). Test connection, update, remove buttons.
+- **`client/components/connections/ConnectionsPage.tsx`**: Added Automation AI section with Sparkles icon between Active Model and Provider API Keys.
+- **`client/components/layout/DashboardShell.tsx`**: Added email inbox prefetch (2-min staleTime) so data is ready when navigating to Email tab.
+
+**Why:**
+- Email is the highest-value daily workflow for business owners — it deserves its own dedicated tab with a professional split layout, not a sub-tab inside Composer. The Automation AI lane enables cheap email intelligence (summaries, auto-tagging, compose help) without consuming expensive primary chat model tokens. Documents (renamed Composer) focuses on writing/document workflows without the Inbox sub-tab.
+
+**Files touched:**
+- `server/prisma/schema.prisma` — 3 new models + User relations
+- `server/src/services/automation.service.ts` — New: direct LLM API calls
+- `server/src/services/email-intelligence.service.ts` — New: email processing pipeline
+- `server/src/routes/automation.ts` — New: automation settings + assist endpoints
+- `server/src/routes/email.ts` — Send, full body, contacts, processed, intelligence trigger
+- `server/src/routes/composer.ts` — Miscellaneous system tag
+- `server/src/index.ts` — Mount automation routes
+- `client/components/layout/TabNavigation.tsx` — Email + Documents tabs
+- `client/components/layout/DashboardShell.tsx` — Inbox prefetch
+- `client/app/dashboard/email/page.tsx` — Render EmailPage
+- `client/app/dashboard/documents/page.tsx` — New: Documents route
+- `client/app/dashboard/composer/page.tsx` — Redirect to documents
+- `client/components/email/EmailPage.tsx` — Complete rewrite (split layout)
+- `client/components/email/EmailList.tsx` — New: email list component
+- `client/components/email/EmailDetail.tsx` — New: email detail component
+- `client/components/email/ComposePane.tsx` — New: compose pane component
+- `client/components/composer/DocumentsPage.tsx` — New: Documents page
+- `client/components/connections/AutomationAICard.tsx` — New: automation config UI
+- `client/components/connections/ConnectionsPage.tsx` — Automation AI section
+
+---
+
 ## 2026-02-08 — Evolve Email into Composer: unified text/document agent area with 6 sub-tabs
 
 **Author:** Omid (via Claude Code)

@@ -21,6 +21,7 @@ const SYSTEM_TAGS = [
   { name: "Operations", color: "#8b5cf6", sortingIntent: "ops-internal", autoDraft: false },
   { name: "Legal/Admin", color: "#ef4444", sortingIntent: "legal-compliance", autoDraft: false },
   { name: "Personal", color: "#6b7280", sortingIntent: "personal", autoDraft: false },
+  { name: "Miscellaneous", color: "#94a3b8", sortingIntent: "misc-other", autoDraft: false },
 ];
 
 // ─── Helper: agentExec ──────────────────────────────────────

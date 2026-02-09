@@ -31,6 +31,9 @@ model User {
   invoices            Invoice[]
   pdfSessions         PdfSession[]
   pdfForms            PdfForm[]
+  automationSettings  AutomationSettings?
+  processedEmails     ProcessedEmail[]
+  emailContents       EmailContent[]
 }
 
 model Todo {
@@ -212,4 +215,50 @@ model PdfForm {
   updatedAt   DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model AutomationSettings {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  provider  String   // "openai", "anthropic", "google"
+  modelId   String   // e.g. "gpt-4o-mini", "claude-haiku-4-5", "gemini-2.0-flash-lite"
+  apiKey    String   // AES-256-GCM encrypted
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model ProcessedEmail {
+  id          String   @id @default(uuid())
+  userId      String
+  emailId     String   // Provider message ID
+  provider    String   // "google" or "microsoft"
+  summary     String?  // AI-generated one-sentence summary
+  tagId       String?  // Assigned EmailTag ID
+  tagName     String?  // Denormalized tag name for fast reads
+  processedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, emailId])
+}
+
+model EmailContent {
+  id        String   @id @default(uuid())
+  userId    String
+  emailId   String   // Provider message ID
+  provider  String
+  subject   String
+  from      String
+  to        String?
+  date      String
+  body      String   // Full email body text
+  snippet   String?
+  read      Boolean  @default(false)
+  fetchedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, emailId])
 }
