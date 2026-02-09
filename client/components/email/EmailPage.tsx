@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { GlassPanel } from "@/components/ui/GlassPanel";
@@ -25,6 +25,9 @@ interface EmailMessage {
   provider: "google" | "microsoft";
 }
 
+// Load schedule: 1 month initially, then 2 months per subsequent load
+const LOAD_SCHEDULE = [1, 2, 2, 2, 2, 2]; // months per chunk
+
 export function EmailPage() {
   const queryClient = useQueryClient();
   const [selectedEmailId, setSelectedEmailId] = useState<string | null>(null);
@@ -34,6 +37,13 @@ export function EmailPage() {
   const [composeSubject, setComposeSubject] = useState<string | undefined>();
   const tagManagerRef = useRef<HTMLDivElement>(null);
 
+  // Progressive loading state
+  const [extraMessages, setExtraMessages] = useState<EmailMessage[]>([]);
+  const [chunkIndex, setChunkIndex] = useState(1);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const [nextBefore, setNextBefore] = useState<string | null>(null);
+
   const { data: statusData } = useQuery({
     queryKey: ["email-status"],
     queryFn: async () => {
@@ -41,6 +51,7 @@ export function EmailPage() {
       if (!res.ok) throw new Error(res.error);
       return res.data;
     },
+    staleTime: 5 * 60 * 1000,
   });
 
   const { data: settingsData } = useQuery({
@@ -50,32 +61,93 @@ export function EmailPage() {
       if (!res.ok) throw new Error(res.error || "Failed to load settings");
       return res.data;
     },
+    staleTime: 5 * 60 * 1000,
   });
 
+  // Initial load: first month — uses cache from DashboardShell prefetch
   const { data: inboxData, isLoading: inboxLoading } = useQuery({
-    queryKey: ["email-inbox"],
+    queryKey: ["email-inbox-chunk-0"],
     queryFn: async () => {
-      const res = await api.get<any>("/email/inbox?max=50");
+      const res = await api.get<any>("/email/inbox?months=1");
       if (!res.ok) throw new Error(res.error);
       return res.data;
     },
     enabled: !!statusData?.connected,
+    staleTime: 3 * 60 * 1000,
     refetchInterval: 3 * 60 * 1000,
   });
 
-  const messages: EmailMessage[] = inboxData?.messages || [];
+  // Derive initial messages from query data (works with cache + fresh fetches)
+  const initialMessages: EmailMessage[] = inboxData?.messages || [];
+
+  // Set nextBefore cursor when initial data loads
+  useEffect(() => {
+    if (inboxData?.dateRange?.after && !nextBefore) {
+      setNextBefore(inboxData.dateRange.after);
+    }
+    if (inboxData?.messages?.length === 0) {
+      setHasMore(false);
+    }
+  }, [inboxData, nextBefore]);
+
+  // Combine initial + extra messages (from load-more)
+  const allMessages = (() => {
+    if (extraMessages.length === 0) return initialMessages;
+    const existingIds = new Set(initialMessages.map((m) => m.id));
+    const unique = extraMessages.filter((m) => !existingIds.has(m.id));
+    return [...initialMessages, ...unique];
+  })();
+
+  // Load more handler — called when user scrolls to bottom
+  const loadMore = useCallback(async () => {
+    if (loadingMore || !hasMore || !nextBefore) return;
+    if (chunkIndex >= LOAD_SCHEDULE.length) {
+      setHasMore(false);
+      return;
+    }
+
+    setLoadingMore(true);
+    try {
+      const months = LOAD_SCHEDULE[chunkIndex];
+      const res = await api.get<any>(
+        `/email/inbox?months=${months}&before=${encodeURIComponent(nextBefore)}`
+      );
+      if (!res.ok) throw new Error(res.error);
+
+      const newMsgs: EmailMessage[] = res.data.messages || [];
+
+      if (newMsgs.length === 0) {
+        setHasMore(false);
+      } else {
+        setExtraMessages((prev) => {
+          const existingIds = new Set(prev.map((m) => m.id));
+          const unique = newMsgs.filter((m) => !existingIds.has(m.id));
+          return [...prev, ...unique];
+        });
+        if (res.data.dateRange?.after) {
+          setNextBefore(res.data.dateRange.after);
+        }
+        setChunkIndex((i) => i + 1);
+      }
+    } catch (err) {
+      console.error("[Email] Load more error:", err);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [loadingMore, hasMore, nextBefore, chunkIndex]);
 
   // Fetch tag assignments for current emails
+  const emailIds = allMessages.map((m) => m.id).join(",");
   const { data: emailTagsData } = useQuery({
-    queryKey: ["email-tags", messages.map((m) => m.id).join(",")],
+    queryKey: ["email-tags", emailIds],
     queryFn: async () => {
-      const ids = messages.map((m) => m.id).join(",");
-      if (!ids) return { tags: {} };
-      const res = await api.get<any>(`/email/email-tags?ids=${ids}`);
+      if (!emailIds) return { tags: {} };
+      const res = await api.get<any>(`/email/email-tags?ids=${emailIds}`);
       if (!res.ok) return { tags: {} };
       return res.data;
     },
-    enabled: messages.length > 0,
+    enabled: allMessages.length > 0,
+    staleTime: 5 * 60 * 1000,
   });
 
   // Seed system tags on first load
@@ -86,11 +158,11 @@ export function EmailPage() {
   const connected = statusData?.connected || false;
   const tags = settingsData?.tags || [];
   const emailTags: Record<string, { tagId: string; tagName: string | null }> = emailTagsData?.tags || {};
-  const unreadCount = messages.filter((m) => !m.read).length;
+  const unreadCount = allMessages.filter((m) => !m.read).length;
 
   // Find the selected email for detail view
   const selectedEmail = selectedEmailId
-    ? messages.find((m) => m.id === selectedEmailId)
+    ? allMessages.find((m) => m.id === selectedEmailId)
     : null;
 
   const handleReply = (to: string, subject: string) => {
@@ -145,6 +217,11 @@ export function EmailPage() {
               {unreadCount} unread
             </span>
           )}
+          {allMessages.length > 0 && (
+            <span className="text-[9px] text-hud-text-muted">
+              {allMessages.length} emails
+            </span>
+          )}
         </div>
       </div>
 
@@ -195,7 +272,7 @@ export function EmailPage() {
       </div>
 
       {/* Main split layout */}
-      {inboxLoading ? (
+      {inboxLoading && allMessages.length === 0 ? (
         <div className="flex items-center justify-center py-20">
           <LoadingSpinner size="lg" />
         </div>
@@ -204,7 +281,7 @@ export function EmailPage() {
           {/* Left pane — Email list */}
           <GlassPanel className="!p-2 overflow-hidden">
             <EmailList
-              messages={messages}
+              messages={allMessages}
               selectedId={selectedEmailId}
               onSelect={(id) => {
                 setSelectedEmailId(id);
@@ -220,6 +297,9 @@ export function EmailPage() {
                   queryClient.invalidateQueries({ queryKey: ["email-tags"] });
                 });
               }}
+              onLoadMore={loadMore}
+              loadingMore={loadingMore}
+              hasMore={hasMore}
             />
           </GlassPanel>
 

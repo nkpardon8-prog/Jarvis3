@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Circle, CheckCircle2, Tag, X } from "lucide-react";
+import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 
 interface EmailMessage {
   id: string;
@@ -22,6 +23,9 @@ interface EmailListProps {
   tags: any[];
   emailTags: Record<string, { tagId: string; tagName: string | null }>;
   onTagEmail: (emailId: string, provider: string, tagId: string | null, tagName: string | null) => void;
+  onLoadMore: () => void;
+  loadingMore: boolean;
+  hasMore: boolean;
 }
 
 export function EmailList({
@@ -33,8 +37,30 @@ export function EmailList({
   tags,
   emailTags,
   onTagEmail,
+  onLoadMore,
+  loadingMore,
+  hasMore,
 }: EmailListProps) {
   const [tagMenuId, setTagMenuId] = useState<string | null>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
+
+  // IntersectionObserver to trigger loadMore when sentinel is visible
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && hasMore && !loadingMore) {
+          onLoadMore();
+        }
+      },
+      { threshold: 0.1 }
+    );
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMore, loadingMore, onLoadMore]);
 
   // Apply filters
   let filtered = messages;
@@ -164,6 +190,14 @@ export function EmailList({
           </div>
         );
       })}
+
+      {/* Scroll sentinel — triggers loading more when visible */}
+      <div ref={sentinelRef} className="flex items-center justify-center py-3">
+        {loadingMore && <LoadingSpinner size="sm" />}
+        {!hasMore && filtered.length > 20 && (
+          <span className="text-[9px] text-hud-text-muted">End of inbox</span>
+        )}
+      </div>
     </div>
   );
 }

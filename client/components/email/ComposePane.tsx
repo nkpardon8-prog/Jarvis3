@@ -1,11 +1,11 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { HudButton } from "@/components/ui/HudButton";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
-import { Send, Sparkles, X } from "lucide-react";
+import { Send, Sparkles, X, Save } from "lucide-react";
 
 interface ComposePaneProps {
   initialTo?: string;
@@ -14,6 +14,7 @@ interface ComposePaneProps {
 }
 
 export function ComposePane({ initialTo, initialSubject, onClearInitial }: ComposePaneProps) {
+  const queryClient = useQueryClient();
   const [to, setTo] = useState(initialTo || "");
   const [subject, setSubject] = useState(initialSubject || "");
   const [body, setBody] = useState("");
@@ -35,7 +36,7 @@ export function ComposePane({ initialTo, initialSubject, onClearInitial }: Compo
     }, 300);
   };
 
-  // Contact search — triggers on debounced query, min 1 character
+  // Contact search — triggers on debounced query, min 2 characters
   const { data: contactsData, isFetching: contactsFetching } = useQuery({
     queryKey: ["email-contacts", debouncedQuery],
     queryFn: async () => {
@@ -43,7 +44,7 @@ export function ComposePane({ initialTo, initialSubject, onClearInitial }: Compo
       if (!res.ok) return { contacts: [] };
       return res.data;
     },
-    enabled: debouncedQuery.length >= 1,
+    enabled: debouncedQuery.length >= 2,
     staleTime: 30 * 1000,
   });
 
@@ -62,6 +63,22 @@ export function ComposePane({ initialTo, initialSubject, onClearInitial }: Compo
     },
   });
 
+  const saveDraft = useMutation({
+    mutationFn: async () => {
+      const res = await api.post("/email/drafts", {
+        type: "email",
+        to: to || null,
+        subject: subject || null,
+        body,
+      });
+      if (!res.ok) throw new Error(res.error || "Failed to save draft");
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["drafts"] });
+    },
+  });
+
   const aiAssist = useMutation({
     mutationFn: async () => {
       const prompt = `Help me compose a professional email.\n\nTo: ${to}\nSubject: ${subject}\nDraft so far: ${body || "(empty)"}\n\nPlease write or improve the email body. Return only the email body text, no subject line or headers.`;
@@ -77,6 +94,7 @@ export function ComposePane({ initialTo, initialSubject, onClearInitial }: Compo
 
   const contacts = contactsData?.contacts || [];
   const canSend = to.trim() && subject.trim() && body.trim();
+  const canSaveDraft = subject.trim() || body.trim();
 
   return (
     <div className="flex flex-col h-full">
@@ -110,11 +128,11 @@ export function ComposePane({ initialTo, initialSubject, onClearInitial }: Compo
                 setShowContacts(true);
               }}
               onBlur={() => setTimeout(() => setShowContacts(false), 200)}
-              onFocus={() => { if (to.length >= 1) setShowContacts(true); }}
+              onFocus={() => { if (to.length >= 2) setShowContacts(true); }}
               placeholder="recipient@email.com"
               className="w-full bg-hud-bg-secondary/50 border border-hud-border rounded-lg px-3 py-1.5 text-xs text-hud-text placeholder:text-hud-text-muted/50 focus:outline-none focus:border-hud-accent/50"
             />
-            {showContacts && to.length >= 1 && (
+            {showContacts && to.length >= 2 && (
               <div className="absolute z-50 top-full mt-1 w-full bg-hud-bg border border-hud-border rounded-lg shadow-xl overflow-hidden max-h-48 overflow-y-auto">
                 {contactsFetching && contacts.length === 0 && (
                   <div className="px-3 py-2 text-[10px] text-hud-text-muted">Searching...</div>
@@ -136,7 +154,7 @@ export function ComposePane({ initialTo, initialSubject, onClearInitial }: Compo
                     </button>
                   ))
                 ) : (
-                  !contactsFetching && debouncedQuery.length >= 1 && (
+                  !contactsFetching && debouncedQuery.length >= 2 && (
                     <div className="px-3 py-2 text-[10px] text-hud-text-muted">No contacts found</div>
                   )
                 )}
@@ -209,7 +227,7 @@ export function ComposePane({ initialTo, initialSubject, onClearInitial }: Compo
         <p className="text-xs text-hud-amber mb-2">{(aiAssist.error as Error).message}</p>
       )}
 
-      {/* Send */}
+      {/* Send + Save Draft */}
       <div className="flex items-center gap-2">
         <HudButton
           size="sm"
@@ -219,11 +237,23 @@ export function ComposePane({ initialTo, initialSubject, onClearInitial }: Compo
           {sendEmail.isPending ? <LoadingSpinner size="sm" /> : <Send size={12} />}
           Send
         </HudButton>
+        <HudButton
+          size="sm"
+          variant="secondary"
+          onClick={() => saveDraft.mutate()}
+          disabled={!canSaveDraft || saveDraft.isPending}
+        >
+          {saveDraft.isPending ? <LoadingSpinner size="sm" /> : <Save size={12} />}
+          Save Draft
+        </HudButton>
         {sendEmail.isSuccess && (
           <span className="text-[10px] text-hud-success">Sent!</span>
         )}
         {sendEmail.isError && (
           <span className="text-[10px] text-hud-error">{(sendEmail.error as Error).message}</span>
+        )}
+        {saveDraft.isSuccess && (
+          <span className="text-[10px] text-hud-success">Saved!</span>
         )}
       </div>
     </div>

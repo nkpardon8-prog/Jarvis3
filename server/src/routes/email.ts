@@ -43,7 +43,13 @@ router.get("/status", async (req: AuthRequest, res: Response) => {
 router.get("/inbox", async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.userId;
-    const maxResults = Math.min(parseInt(String(req.query.max || "50"), 10), 100);
+    const maxResults = Math.min(parseInt(String(req.query.max || "500"), 10), 500);
+
+    // Date range: `before` (ISO) = upper bound, `months` = how far back from `before`
+    const beforeDate = req.query.before ? new Date(String(req.query.before)) : new Date();
+    const months = Math.min(parseInt(String(req.query.months || "1"), 10), 12);
+    const afterDate = new Date(beforeDate);
+    afterDate.setMonth(afterDate.getMonth() - months);
 
     const googleTokens = await getTokensForProvider(userId, "google");
     const msTokens = await getTokensForProvider(userId, "microsoft");
@@ -67,7 +73,9 @@ router.get("/inbox", async (req: AuthRequest, res: Response) => {
         const gmailMessages = await fetchGmailMessages(
           userId,
           googleTokens.accessToken,
-          maxResults
+          maxResults,
+          afterDate,
+          beforeDate
         );
         messages.push(...gmailMessages);
       } catch (err: any) {
@@ -79,7 +87,9 @@ router.get("/inbox", async (req: AuthRequest, res: Response) => {
       try {
         const outlookMessages = await fetchOutlookMessages(
           msTokens.accessToken,
-          maxResults
+          maxResults,
+          afterDate,
+          beforeDate
         );
         messages.push(...outlookMessages);
       } catch (err: any) {
@@ -103,6 +113,11 @@ router.get("/inbox", async (req: AuthRequest, res: Response) => {
           microsoft: !!msTokens,
         },
         messages: sliced,
+        // Let the client know the date range so it can request the next chunk
+        dateRange: {
+          after: afterDate.toISOString(),
+          before: beforeDate.toISOString(),
+        },
       },
     });
   } catch (err: any) {
@@ -239,6 +254,98 @@ router.delete("/tags/:id", async (req: AuthRequest, res: Response) => {
   }
 });
 
+// ─── Drafts (shared between email compose and document compose) ──
+
+router.get("/drafts", async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const type = req.query.type ? String(req.query.type) : undefined;
+
+    const drafts = await prisma.draft.findMany({
+      where: { userId, ...(type ? { type } : {}) },
+      orderBy: { updatedAt: "desc" },
+    });
+
+    res.json({ ok: true, data: { drafts } });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post("/drafts", async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const { type, to, subject, body, context, provider } = req.body;
+
+    if (!body && !subject) {
+      res.status(400).json({ ok: false, error: "subject or body is required" });
+      return;
+    }
+
+    const draft = await prisma.draft.create({
+      data: {
+        userId,
+        type: type || "email",
+        to: to || null,
+        subject: subject || null,
+        body: body || "",
+        context: context || null,
+        provider: provider || null,
+      },
+    });
+
+    res.json({ ok: true, data: draft });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.patch("/drafts/:id", async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const id = String(req.params.id);
+
+    const existing = await prisma.draft.findFirst({ where: { id, userId } });
+    if (!existing) {
+      res.status(404).json({ ok: false, error: "Draft not found" });
+      return;
+    }
+
+    const { to, subject, body, context } = req.body;
+    const draft = await prisma.draft.update({
+      where: { id },
+      data: {
+        ...(to !== undefined ? { to } : {}),
+        ...(subject !== undefined ? { subject } : {}),
+        ...(body !== undefined ? { body } : {}),
+        ...(context !== undefined ? { context } : {}),
+      },
+    });
+
+    res.json({ ok: true, data: draft });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.delete("/drafts/:id", async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const id = String(req.params.id);
+
+    const existing = await prisma.draft.findFirst({ where: { id, userId } });
+    if (!existing) {
+      res.status(404).json({ ok: false, error: "Draft not found" });
+      return;
+    }
+
+    await prisma.draft.delete({ where: { id } });
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // ─── Tag an email ────────────────────────────────────────────
 
 router.post("/tag-email", async (req: AuthRequest, res: Response) => {
@@ -313,9 +420,13 @@ router.post("/auto-tag", async (req: AuthRequest, res: Response) => {
 
     const messages: EmailMessage[] = [];
 
+    const now = new Date();
+    const thirtyDaysAgo = new Date(now);
+    thirtyDaysAgo.setMonth(thirtyDaysAgo.getMonth() - 1);
+
     if (googleTokens) {
       try {
-        const gmailMessages = await fetchGmailMessages(userId, googleTokens.accessToken, 50);
+        const gmailMessages = await fetchGmailMessages(userId, googleTokens.accessToken, 200, thirtyDaysAgo, now);
         messages.push(...gmailMessages);
       } catch (err: any) {
         console.error("[AutoTag] Gmail fetch error:", err.message);
@@ -324,7 +435,7 @@ router.post("/auto-tag", async (req: AuthRequest, res: Response) => {
 
     if (msTokens) {
       try {
-        const outlookMessages = await fetchOutlookMessages(msTokens.accessToken, 50);
+        const outlookMessages = await fetchOutlookMessages(msTokens.accessToken, 200, thirtyDaysAgo, now);
         messages.push(...outlookMessages);
       } catch (err: any) {
         console.error("[AutoTag] Outlook fetch error:", err.message);
@@ -560,15 +671,12 @@ router.get("/message/:id", async (req: AuthRequest, res: Response) => {
   }
 });
 
-// ─── Contact search (fast, from People API + recent emails) ──
-
-// In-memory per-user contact cache from recent inbox (avoids repeated Gmail API calls)
-const contactCache = new Map<string, { contacts: { name: string; email: string }[]; expires: number }>();
+// ─── Contact search (searches entire Gmail account) ──────────
 
 router.get("/search-contacts", async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.userId;
-    const query = String(req.query.q || "").trim().toLowerCase();
+    const query = String(req.query.q || "").trim();
 
     if (!query) {
       res.json({ ok: true, data: { contacts: [] } });
@@ -581,69 +689,66 @@ router.get("/search-contacts", async (req: AuthRequest, res: Response) => {
       return;
     }
 
-    // Build or use cached contact list from recent inbox messages
-    const cached = contactCache.get(userId);
-    let allContacts: { name: string; email: string }[];
+    const oauth2Client = await getGoogleApiClient(userId);
+    if (!oauth2Client) {
+      res.json({ ok: true, data: { contacts: [] } });
+      return;
+    }
 
-    if (cached && cached.expires > Date.now()) {
-      allContacts = cached.contacts;
-    } else {
-      allContacts = [];
-      const oauth2Client = await getGoogleApiClient(userId);
-      if (oauth2Client) {
-        const gmail = google.gmail({ version: "v1", auth: oauth2Client });
-        // Fetch recent 50 messages (metadata only — fast batch)
-        const listRes = await gmail.users.messages.list({
-          userId: "me",
-          maxResults: 50,
-          q: "in:inbox OR in:sent",
-        });
+    const gmail = google.gmail({ version: "v1", auth: oauth2Client });
 
-        const seen = new Set<string>();
-        const msgs = listRes.data.messages || [];
+    // Search the entire account for emails matching the query
+    const listRes = await gmail.users.messages.list({
+      userId: "me",
+      maxResults: 30,
+      q: `from:${query} OR to:${query}`,
+    });
 
-        // Fetch metadata in parallel (batches of 10)
-        for (let i = 0; i < msgs.length; i += 10) {
-          const batch = msgs.slice(i, i + 10);
-          const results = await Promise.allSettled(
-            batch.map((m) =>
-              gmail.users.messages.get({
-                userId: "me",
-                id: m.id!,
-                format: "metadata",
-                metadataHeaders: ["From", "To"],
-              })
-            )
-          );
-          for (const r of results) {
-            if (r.status !== "fulfilled") continue;
-            const headers = r.value.data.payload?.headers || [];
-            const from = headers.find((h) => h.name === "From")?.value || "";
-            const to = headers.find((h) => h.name === "To")?.value || "";
+    const msgs = listRes.data.messages || [];
+    if (msgs.length === 0) {
+      res.json({ ok: true, data: { contacts: [] } });
+      return;
+    }
 
-            for (const addr of [from, ...(to ? to.split(",") : [])]) {
-              if (!addr.trim()) continue;
-              const match = addr.match(/<([^>]+)>/);
-              const email = (match ? match[1] : addr.trim()).toLowerCase();
-              if (seen.has(email)) continue;
-              seen.add(email);
-              const name = match ? addr.replace(/<[^>]+>/, "").trim().replace(/"/g, "") : "";
-              allContacts.push({ name: name || email, email });
-            }
-          }
+    // Fetch metadata in parallel (batches of 15)
+    const seen = new Set<string>();
+    const contacts: { name: string; email: string }[] = [];
+    const queryLower = query.toLowerCase();
+
+    for (let i = 0; i < msgs.length; i += 15) {
+      const batch = msgs.slice(i, i + 15);
+      const results = await Promise.allSettled(
+        batch.map((m) =>
+          gmail.users.messages.get({
+            userId: "me",
+            id: m.id!,
+            format: "metadata",
+            metadataHeaders: ["From", "To"],
+          })
+        )
+      );
+
+      for (const r of results) {
+        if (r.status !== "fulfilled") continue;
+        const headers = r.value.data.payload?.headers || [];
+        const from = headers.find((h) => h.name === "From")?.value || "";
+        const to = headers.find((h) => h.name === "To")?.value || "";
+
+        for (const addr of [from, ...(to ? to.split(",") : [])]) {
+          if (!addr.trim()) continue;
+          const match = addr.match(/<([^>]+)>/);
+          const email = (match ? match[1] : addr.trim()).toLowerCase();
+          if (seen.has(email)) continue;
+          // Only include contacts that match the query
+          const name = match ? addr.replace(/<[^>]+>/, "").trim().replace(/"/g, "") : "";
+          if (!email.includes(queryLower) && !name.toLowerCase().includes(queryLower)) continue;
+          seen.add(email);
+          contacts.push({ name: name || email, email });
         }
-
-        // Cache for 5 minutes
-        contactCache.set(userId, { contacts: allContacts, expires: Date.now() + 5 * 60 * 1000 });
       }
     }
 
-    // Filter by query
-    const matches = allContacts
-      .filter((c) => c.email.includes(query) || c.name.toLowerCase().includes(query))
-      .slice(0, 10);
-
-    res.json({ ok: true, data: { contacts: matches } });
+    res.json({ ok: true, data: { contacts: contacts.slice(0, 15) } });
   } catch (err: any) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -664,7 +769,9 @@ interface EmailMessage {
 async function fetchGmailMessages(
   userId: string,
   accessToken: string,
-  maxResults: number
+  maxResults: number,
+  afterDate: Date,
+  beforeDate: Date
 ): Promise<EmailMessage[]> {
   const oauth2Client = await getGoogleApiClient(userId);
   if (!oauth2Client) {
@@ -673,27 +780,48 @@ async function fetchGmailMessages(
 
   const gmail = google.gmail({ version: "v1", auth: oauth2Client });
 
-  // List message IDs from inbox
-  const listRes = await gmail.users.messages.list({
-    userId: "me",
-    maxResults,
-    labelIds: ["INBOX"],
-  });
+  // Gmail uses epoch seconds for after:/before: query operators
+  const afterEpoch = Math.floor(afterDate.getTime() / 1000);
+  const beforeEpoch = Math.floor(beforeDate.getTime() / 1000);
 
-  const messageIds = listRes.data.messages || [];
-  if (messageIds.length === 0) return [];
+  // List message IDs from inbox within date range, paginate if needed
+  let allMessageIds: { id: string }[] = [];
+  let pageToken: string | undefined;
 
-  // Batch fetch message metadata
+  do {
+    const listRes = await gmail.users.messages.list({
+      userId: "me",
+      maxResults: Math.min(maxResults - allMessageIds.length, 100),
+      labelIds: ["INBOX"],
+      q: `after:${afterEpoch} before:${beforeEpoch}`,
+      ...(pageToken ? { pageToken } : {}),
+    });
+
+    const ids = (listRes.data.messages || []).filter((m): m is { id: string } => !!m.id);
+    allMessageIds.push(...ids);
+    pageToken = listRes.data.nextPageToken || undefined;
+  } while (pageToken && allMessageIds.length < maxResults);
+
+  if (allMessageIds.length === 0) return [];
+
+  // Parallel metadata fetch in batches of 20
   const messages: EmailMessage[] = [];
-  for (const msg of messageIds) {
-    try {
-      const detail = await gmail.users.messages.get({
-        userId: "me",
-        id: msg.id!,
-        format: "metadata",
-        metadataHeaders: ["Subject", "From", "Date"],
-      });
+  for (let i = 0; i < allMessageIds.length; i += 20) {
+    const batch = allMessageIds.slice(i, i + 20);
+    const results = await Promise.allSettled(
+      batch.map((msg) =>
+        gmail.users.messages.get({
+          userId: "me",
+          id: msg.id,
+          format: "metadata",
+          metadataHeaders: ["Subject", "From", "Date"],
+        })
+      )
+    );
 
+    for (const r of results) {
+      if (r.status !== "fulfilled") continue;
+      const detail = r.value;
       const headers = detail.data.payload?.headers || [];
       const subject =
         headers.find((h) => h.name === "Subject")?.value || "(No subject)";
@@ -702,7 +830,7 @@ async function fetchGmailMessages(
       const read = !(detail.data.labelIds || []).includes("UNREAD");
 
       messages.push({
-        id: msg.id!,
+        id: detail.data.id!,
         subject,
         from,
         date: date ? new Date(date).toISOString() : new Date().toISOString(),
@@ -710,7 +838,7 @@ async function fetchGmailMessages(
         read,
         provider: "google",
       });
-    } catch {}
+    }
   }
 
   return messages;
@@ -718,11 +846,14 @@ async function fetchGmailMessages(
 
 async function fetchOutlookMessages(
   accessToken: string,
-  maxResults: number
+  maxResults: number,
+  afterDate: Date,
+  beforeDate: Date
 ): Promise<EmailMessage[]> {
   const url = new URL("https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages");
   url.searchParams.set("$top", String(maxResults));
   url.searchParams.set("$orderby", "receivedDateTime desc");
+  url.searchParams.set("$filter", `receivedDateTime ge ${afterDate.toISOString()} and receivedDateTime lt ${beforeDate.toISOString()}`);
   url.searchParams.set(
     "$select",
     "id,subject,from,receivedDateTime,bodyPreview,isRead"

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import { HudButton } from "@/components/ui/HudButton";
@@ -15,6 +15,7 @@ import {
   Upload,
   FileText,
   Trash2,
+  Save,
 } from "lucide-react";
 
 interface ComposeTabProps {
@@ -38,6 +39,7 @@ interface UploadedFileInfo {
 }
 
 export function ComposeTab({ recipient, onClearRecipient }: ComposeTabProps) {
+  const queryClient = useQueryClient();
   const [text, setText] = useState("");
   const [suggestion, setSuggestion] = useState<string | null>(null);
   const [context, setContext] = useState("");
@@ -69,6 +71,22 @@ export function ComposeTab({ recipient, onClearRecipient }: ComposeTabProps) {
     },
     onSuccess: (data) => {
       setSuggestion(data.improved);
+    },
+  });
+
+  const saveDraft = useMutation({
+    mutationFn: async () => {
+      const res = await api.post("/email/drafts", {
+        type: "document",
+        subject: context ? context.slice(0, 100) : "Untitled draft",
+        body: text,
+        context: context || null,
+      });
+      if (!res.ok) throw new Error(res.error || "Failed to save draft");
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["drafts"] });
     },
   });
 
@@ -243,8 +261,19 @@ export function ComposeTab({ recipient, onClearRecipient }: ComposeTabProps) {
         />
       </GlassPanel>
 
-      {/* Attach file */}
-      <div className="flex gap-2">
+      {/* Save Draft + Attach file */}
+      <div className="flex gap-2 flex-wrap">
+        <HudButton
+          size="sm"
+          onClick={() => saveDraft.mutate()}
+          disabled={!text.trim() || saveDraft.isPending}
+        >
+          {saveDraft.isPending ? <LoadingSpinner size="sm" /> : <Save size={12} />}
+          Save Draft
+        </HudButton>
+        {saveDraft.isSuccess && (
+          <span className="text-[10px] text-hud-success self-center">Saved!</span>
+        )}
         <HudButton
           size="sm"
           variant="secondary"

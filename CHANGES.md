@@ -4,6 +4,36 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-09 — Eager email prefetch, infinite scroll, drafts, full-account contact search
+
+**Author:** Omid (via Claude Code)
+**Commit:** feat: eager email prefetch, infinite scroll, unified drafts, full-account contact search
+**Branch:** oz/email-restructure-automation
+
+**What changed:**
+- **Eager email prefetch** — DashboardShell now prefetches email-status → settings + inbox (parallel) → email-tags on login using `setQueryData` to inject into React Query cache. Email tab renders instantly from cache instead of showing a loading spinner.
+- **Date-range inbox pagination** — Server inbox endpoint now accepts `months` (1–12) and `before` (ISO date) query params. Gmail uses `after:EPOCH before:EPOCH` query operators; Outlook uses `$filter` with date range. Response includes `dateRange: { after, before }` for cursor-based pagination. Messages fetched in parallel batches of 20.
+- **Infinite scroll** — EmailPage uses progressive loading schedule `[1, 2, 2, 2, 2, 2]` months. EmailList has IntersectionObserver on sentinel div that triggers `loadMore()` when the user scrolls to the bottom. Deduplicates by message ID when appending chunks.
+- **Unified Draft model** — New Prisma `Draft` model with type (email/document), to, subject, body, context, provider fields. CRUD routes: `GET/POST/PATCH/DELETE /email/drafts` with userId scoping.
+- **Save to Drafts buttons** — ComposePane (email compose) and ComposeTab (AI writing assistant) both have "Save Draft" buttons that save to the same unified drafts library. DraftsTab rewritten to display both types with filter dropdown.
+- **Full-account contact search** — Rewrote contact search to use Gmail's `from:query OR to:query` full-account search instead of only searching cached loaded emails. Parallel metadata fetch in batches of 15.
+- **Cache-first EmailPage** — Derives `initialMessages` from `inboxData?.messages` (works with both cache and fresh fetches). Loading spinner only shows when `inboxLoading && allMessages.length === 0`.
+
+**Why:**
+- Email tab was slow to load — users had to wait for API calls every time they navigated to it. Eager prefetch makes it instant. The previous approach only loaded ~50 emails with no date filtering. Progressive loading gives users access to their full inbox history. Drafts were scattered — unified model simplifies the UX. Contact search was limited to loaded emails — full-account search finds anyone you've ever emailed.
+
+**Files touched:**
+- `server/prisma/schema.prisma` — New `Draft` model with User relation
+- `server/src/routes/email.ts` — Date-range inbox with `months`/`before` params, draft CRUD endpoints, full-account Gmail contact search, parallel metadata batching
+- `client/components/layout/DashboardShell.tsx` — Eager prefetch pipeline (status → settings+inbox → tags) with `setQueryData`
+- `client/components/email/EmailPage.tsx` — Progressive loading with `LOAD_SCHEDULE`, cache-first rendering, `nextBefore` cursor management
+- `client/components/email/EmailList.tsx` — IntersectionObserver infinite scroll sentinel
+- `client/components/email/ComposePane.tsx` — Save Draft button, debounced contact search
+- `client/components/composer/ComposeTab.tsx` — Save Draft button for documents
+- `client/components/composer/DraftsTab.tsx` — Rewritten for unified Draft model with email/document filter
+
+---
+
 ## 2026-02-09 — Manual tagging, bulk AI re-tag, faster contacts, improved email rendering
 
 **Author:** Omid (via Claude Code)

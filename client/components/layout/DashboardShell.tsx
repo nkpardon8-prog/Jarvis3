@@ -9,17 +9,41 @@ import { TabNavigation } from "./TabNavigation";
 export function DashboardShell({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
 
-  // Prefetch email inbox data so it's ready when user navigates to Email tab
+  // Eagerly prefetch all email data on login so the Email tab is instant
   useEffect(() => {
-    queryClient.prefetchQuery({
-      queryKey: ["email-inbox"],
-      queryFn: async () => {
-        const res = await api.get<any>("/email/inbox?max=15");
-        if (!res.ok) throw new Error(res.error);
-        return res.data;
-      },
-      staleTime: 2 * 60 * 1000,
-    });
+    const prefetchEmail = async () => {
+      // 1. Fetch status first to know if connected
+      const statusRes = await api.get<any>("/email/status");
+      if (!statusRes.ok) return;
+      queryClient.setQueryData(["email-status"], statusRes.data);
+
+      if (!statusRes.data?.connected) return;
+
+      // 2. Fetch settings + inbox in parallel
+      const [settingsRes, inboxRes] = await Promise.all([
+        api.get<any>("/email/settings"),
+        api.get<any>("/email/inbox?months=1"),
+      ]);
+
+      if (settingsRes.ok) {
+        queryClient.setQueryData(["email-settings"], settingsRes.data);
+      }
+      if (inboxRes.ok) {
+        queryClient.setQueryData(["email-inbox-chunk-0"], inboxRes.data);
+
+        // 3. Prefetch email tags for loaded messages
+        const msgs = inboxRes.data.messages || [];
+        if (msgs.length > 0) {
+          const ids = msgs.map((m: any) => m.id).join(",");
+          const tagsRes = await api.get<any>(`/email/email-tags?ids=${ids}`);
+          if (tagsRes.ok) {
+            queryClient.setQueryData(["email-tags", ids], tagsRes.data);
+          }
+        }
+      }
+    };
+
+    prefetchEmail().catch(() => {});
   }, [queryClient]);
 
   return (
