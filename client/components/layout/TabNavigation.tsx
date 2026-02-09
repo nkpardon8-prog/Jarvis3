@@ -7,7 +7,8 @@ import {
   Link2,
   Calendar,
   Briefcase,
-  PenLine,
+  Mail,
+  FileText,
   MessageSquare,
   Puzzle,
 } from "lucide-react";
@@ -17,7 +18,8 @@ const tabs = [
   { name: "Connections", href: "/dashboard/connections", icon: Link2 },
   { name: "Calendar", href: "/dashboard/calendar", icon: Calendar },
   { name: "CRM", href: "/dashboard/crm", icon: Briefcase },
-  { name: "Composer", href: "/dashboard/composer", icon: PenLine },
+  { name: "Email", href: "/dashboard/email", icon: Mail },
+  { name: "Documents", href: "/dashboard/documents", icon: FileText },
   { name: "Chat", href: "/dashboard/chat", icon: MessageSquare },
   { name: "Skills", href: "/dashboard/skills", icon: Puzzle },
 ];

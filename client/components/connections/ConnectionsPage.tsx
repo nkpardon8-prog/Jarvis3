@@ -14,6 +14,7 @@ import { GatewayCard } from "./GatewayCard";
 import { IntegrationBuilder } from "./IntegrationBuilder";
 import { IntegrationCard } from "./IntegrationCard";
 import { ClawHubSuggestions } from "./ClawHubSuggestions";
+import { AutomationAICard } from "./AutomationAICard";
 import {
   Brain,
   Radio,
@@ -33,6 +34,7 @@ import {
   HardDrive,
   Wifi,
   Plug,
+  Sparkles,
 } from "lucide-react";
 
 // Top 4 models per provider from the actual OpenClaw models.list
@@ -409,6 +411,20 @@ export function ConnectionsPage() {
           )}
         </GlassPanel>
       </div>
+
+      {/* Automation AI */}
+      <section>
+        <div className="flex items-center gap-2 mb-2">
+          <Sparkles size={18} className="text-hud-amber" />
+          <h3 className="text-sm font-semibold text-hud-text-secondary uppercase tracking-wider">
+            Automation AI
+          </h3>
+        </div>
+        <p className="text-xs text-hud-text-muted mb-4">
+          Separate AI model for email summaries, auto-tagging, and compose assistance. Uses a cheap model to control costs.
+        </p>
+        <AutomationAICard />
+      </section>
 
       {/* LLM Providers — API keys */}
       <section>

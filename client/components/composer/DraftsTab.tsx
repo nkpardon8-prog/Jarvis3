@@ -9,77 +9,67 @@ import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { HudBadge } from "@/components/ui/HudBadge";
 import {
   FileEdit,
-  Check,
-  X,
-  Edit2,
-  Trash2,
   Mail,
+  FileText,
+  Trash2,
+  Edit2,
   ChevronDown,
   ChevronUp,
+  Copy,
 } from "lucide-react";
 
-interface DraftReply {
+interface Draft {
   id: string;
-  emailId: string;
-  emailSubject: string;
-  emailFrom: string;
-  emailSnippet: string | null;
-  tagId: string | null;
-  draftBody: string;
-  tone: string;
-  status: string;
-  provider: string;
+  type: string;
+  to: string | null;
+  subject: string | null;
+  body: string;
+  context: string | null;
+  provider: string | null;
   createdAt: string;
   updatedAt: string;
 }
-
-const STATUS_BADGE: Record<string, { variant: "online" | "warning" | "info" | "error" | "offline"; label: string }> = {
-  pending: { variant: "warning", label: "Pending" },
-  approved: { variant: "online", label: "Approved" },
-  sent: { variant: "info", label: "Sent" },
-  discarded: { variant: "offline", label: "Discarded" },
-};
 
 export function DraftsTab() {
   const queryClient = useQueryClient();
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editBody, setEditBody] = useState("");
-  const [filterStatus, setFilterStatus] = useState<string>("");
+  const [filterType, setFilterType] = useState<string>("");
 
   const { data, isLoading } = useQuery({
-    queryKey: ["composer-drafts", filterStatus],
+    queryKey: ["drafts", filterType],
     queryFn: async () => {
-      const params = filterStatus ? `?status=${filterStatus}` : "";
-      const res = await api.get<any>(`/composer/drafts${params}`);
+      const params = filterType ? `?type=${filterType}` : "";
+      const res = await api.get<any>(`/email/drafts${params}`);
       if (!res.ok) throw new Error(res.error);
       return res.data;
     },
   });
 
   const updateDraft = useMutation({
-    mutationFn: async ({ id, ...body }: { id: string; draftBody?: string; status?: string }) => {
-      const res = await api.patch(`/composer/drafts/${id}`, body);
+    mutationFn: async ({ id, ...body }: { id: string; body?: string; subject?: string }) => {
+      const res = await api.patch(`/email/drafts/${id}`, body);
       if (!res.ok) throw new Error(res.error);
       return res.data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["composer-drafts"] });
+      queryClient.invalidateQueries({ queryKey: ["drafts"] });
       setEditingId(null);
     },
   });
 
   const deleteDraft = useMutation({
     mutationFn: async (id: string) => {
-      const res = await api.delete(`/composer/drafts/${id}`);
+      const res = await api.delete(`/email/drafts/${id}`);
       if (!res.ok) throw new Error(res.error);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["composer-drafts"] });
+      queryClient.invalidateQueries({ queryKey: ["drafts"] });
     },
   });
 
-  const drafts: DraftReply[] = data?.drafts || [];
+  const drafts: Draft[] = data?.drafts || [];
 
   return (
     <div className="space-y-4">
@@ -87,21 +77,19 @@ export function DraftsTab() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <FileEdit size={16} className="text-hud-accent" />
-          <h3 className="text-sm font-semibold text-hud-text">Draft Replies</h3>
-          {data?.total > 0 && (
-            <span className="text-xs text-hud-text-muted">({data.total})</span>
+          <h3 className="text-sm font-semibold text-hud-text">Drafts</h3>
+          {drafts.length > 0 && (
+            <span className="text-xs text-hud-text-muted">({drafts.length})</span>
           )}
         </div>
         <select
-          value={filterStatus}
-          onChange={(e) => setFilterStatus(e.target.value)}
+          value={filterType}
+          onChange={(e) => setFilterType(e.target.value)}
           className="bg-hud-bg-secondary/50 border border-hud-border rounded-lg px-2 py-1 text-xs text-hud-text focus:outline-none focus:border-hud-accent/50"
         >
           <option value="">All</option>
-          <option value="pending">Pending</option>
-          <option value="approved">Approved</option>
-          <option value="sent">Sent</option>
-          <option value="discarded">Discarded</option>
+          <option value="email">Email</option>
+          <option value="document">Document</option>
         </select>
       </div>
 
@@ -112,7 +100,7 @@ export function DraftsTab() {
       ) : drafts.length === 0 ? (
         <GlassPanel>
           <p className="text-xs text-hud-text-muted text-center py-8">
-            No draft replies yet. Generate drafts from the Inbox tab or enable auto-drafting.
+            No drafts yet. Use &ldquo;Save Draft&rdquo; in Email Compose or the Document Writer.
           </p>
         </GlassPanel>
       ) : (
@@ -120,7 +108,7 @@ export function DraftsTab() {
           {drafts.map((draft) => {
             const isExpanded = expandedId === draft.id;
             const isEditing = editingId === draft.id;
-            const badge = STATUS_BADGE[draft.status] || STATUS_BADGE.pending;
+            const isEmail = draft.type === "email";
 
             return (
               <GlassPanel key={draft.id}>
@@ -129,21 +117,34 @@ export function DraftsTab() {
                   className="flex items-start gap-3 cursor-pointer"
                   onClick={() => setExpandedId(isExpanded ? null : draft.id)}
                 >
-                  <Mail size={16} className="text-hud-accent mt-0.5 shrink-0" />
+                  {isEmail ? (
+                    <Mail size={16} className="text-hud-accent mt-0.5 shrink-0" />
+                  ) : (
+                    <FileText size={16} className="text-hud-amber mt-0.5 shrink-0" />
+                  )}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-0.5">
                       <p className="text-xs font-medium text-hud-text truncate">
-                        {draft.emailSubject}
+                        {draft.subject || "(No subject)"}
                       </p>
-                      <HudBadge variant={badge.variant}>{badge.label}</HudBadge>
+                      <HudBadge variant={isEmail ? "info" : "warning"}>
+                        {isEmail ? "Email" : "Document"}
+                      </HudBadge>
                     </div>
-                    <p className="text-[10px] text-hud-text-muted truncate">
-                      From: {draft.emailFrom}
-                    </p>
+                    {isEmail && draft.to && (
+                      <p className="text-[10px] text-hud-text-muted truncate">
+                        To: {draft.to}
+                      </p>
+                    )}
+                    {!isEmail && draft.body && (
+                      <p className="text-[10px] text-hud-text-muted truncate">
+                        {draft.body.slice(0, 80)}...
+                      </p>
+                    )}
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <span className="text-[9px] text-hud-text-muted">
-                      {new Date(draft.createdAt).toLocaleDateString()}
+                      {formatDate(draft.updatedAt)}
                     </span>
                     {isExpanded ? (
                       <ChevronUp size={14} className="text-hud-text-muted" />
@@ -156,26 +157,19 @@ export function DraftsTab() {
                 {/* Expanded content */}
                 {isExpanded && (
                   <div className="mt-3 pt-3 border-t border-hud-border space-y-3">
-                    {draft.emailSnippet && (
-                      <div className="bg-white/3 rounded-lg p-3">
-                        <p className="text-[10px] text-hud-text-muted mb-1">Original email:</p>
-                        <p className="text-xs text-hud-text-secondary">{draft.emailSnippet}</p>
-                      </div>
-                    )}
-
                     {isEditing ? (
                       <div className="space-y-2">
                         <textarea
                           value={editBody}
                           onChange={(e) => setEditBody(e.target.value)}
-                          rows={6}
+                          rows={8}
                           className="w-full bg-hud-bg-secondary/50 border border-hud-border rounded-lg px-3 py-2 text-xs text-hud-text resize-none focus:outline-none focus:border-hud-accent/50"
                         />
                         <div className="flex gap-2">
                           <HudButton
                             size="sm"
                             onClick={() =>
-                              updateDraft.mutate({ id: draft.id, draftBody: editBody })
+                              updateDraft.mutate({ id: draft.id, body: editBody })
                             }
                             disabled={updateDraft.isPending}
                           >
@@ -191,45 +185,34 @@ export function DraftsTab() {
                         </div>
                       </div>
                     ) : (
-                      <div className="bg-hud-accent/5 rounded-lg p-3 border border-hud-accent/10">
-                        <p className="text-[10px] text-hud-accent mb-1">AI Draft Reply:</p>
+                      <div className="bg-white/3 rounded-lg p-3">
                         <p className="text-xs text-hud-text whitespace-pre-wrap">
-                          {draft.draftBody}
+                          {draft.body || "(empty)"}
                         </p>
                       </div>
                     )}
 
                     {/* Actions */}
-                    {draft.status === "pending" && !isEditing && (
+                    {!isEditing && (
                       <div className="flex gap-2">
-                        <HudButton
-                          size="sm"
-                          onClick={() =>
-                            updateDraft.mutate({ id: draft.id, status: "approved" })
-                          }
-                          disabled={updateDraft.isPending}
-                        >
-                          <Check size={12} /> Approve
-                        </HudButton>
                         <HudButton
                           size="sm"
                           variant="secondary"
                           onClick={() => {
                             setEditingId(draft.id);
-                            setEditBody(draft.draftBody);
+                            setEditBody(draft.body);
                           }}
                         >
                           <Edit2 size={12} /> Edit
                         </HudButton>
                         <HudButton
                           size="sm"
-                          variant="ghost"
-                          onClick={() =>
-                            updateDraft.mutate({ id: draft.id, status: "discarded" })
-                          }
-                          disabled={updateDraft.isPending}
+                          variant="secondary"
+                          onClick={() => {
+                            navigator.clipboard.writeText(draft.body);
+                          }}
                         >
-                          <X size={12} /> Discard
+                          <Copy size={12} /> Copy
                         </HudButton>
                         <HudButton
                           size="sm"
@@ -237,7 +220,7 @@ export function DraftsTab() {
                           onClick={() => deleteDraft.mutate(draft.id)}
                           disabled={deleteDraft.isPending}
                         >
-                          <Trash2 size={12} />
+                          <Trash2 size={12} /> Delete
                         </HudButton>
                       </div>
                     )}
@@ -250,4 +233,16 @@ export function DraftsTab() {
       )}
     </div>
   );
+}
+
+function formatDate(iso: string): string {
+  const date = new Date(iso);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }

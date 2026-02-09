@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import { HudButton } from "@/components/ui/HudButton";
-import { Plus, Trash2, Edit2, Check, X, Tag } from "lucide-react";
+import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import { Plus, Trash2, Edit2, Tag, Sparkles, Check, X } from "lucide-react";
 
 interface TagManagerProps {
   tags: any[];
@@ -65,11 +66,62 @@ export function TagManager({ tags }: TagManagerProps) {
     },
   });
 
+  const [aiSuggestion, setAiSuggestion] = useState<string | null>(null);
+
+  const aiHelp = useMutation({
+    mutationFn: async () => {
+      const prompt = `I'm creating an email classification tag called "${name}".\n\n${criteria ? `Current criteria: ${criteria}\n\n` : ""}Write concise classification criteria for this tag — describe what kinds of emails should be tagged with "${name}". Be specific about sender patterns, subject keywords, or content characteristics. Return only the criteria text, nothing else. Keep it to 1-3 sentences.`;
+      const res = await api.post<{ response: string }>("/automation/assist", { prompt });
+      if (!res.ok) throw new Error(res.error || "AI help not available. Configure Automation AI in Connections.");
+      return res.data!;
+    },
+    onSuccess: (data) => {
+      const text = typeof data?.response === "string" ? data.response : JSON.stringify(data?.response ?? "");
+      setAiSuggestion(text);
+    },
+  });
+
+  // Auto-tag: fire-and-forget with polling
+  const [autoTagStatus, setAutoTagStatus] = useState<{ status: string; processed: number; total: number; error?: string } | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval>>(undefined);
+
+  const autoTag = useMutation({
+    mutationFn: async () => {
+      const res = await api.post<any>("/email/auto-tag");
+      if (!res.ok) throw new Error(res.error || "Auto-tagging failed");
+      return res.data;
+    },
+    onSuccess: (data) => {
+      setAutoTagStatus({ status: "running", processed: 0, total: data?.total || 0 });
+      // Start polling for progress — invalidate tags on every tick so UI updates live
+      pollRef.current = setInterval(async () => {
+        try {
+          const res = await api.get<any>("/email/auto-tag/status");
+          if (!res.ok) return;
+          const job = res.data;
+          setAutoTagStatus(job);
+          // Refresh tags on every poll so new tags appear in real time
+          queryClient.invalidateQueries({ queryKey: ["email-tags"] });
+          if (job.status === "done" || job.status === "error" || job.status === "idle") {
+            clearInterval(pollRef.current);
+            pollRef.current = undefined;
+          }
+        } catch { /* ignore */ }
+      }, 3000);
+    },
+  });
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, []);
+
   const resetForm = () => {
     setName("");
     setColor(PRESET_COLORS[0]);
     setDescription("");
     setCriteria("");
+    setAiSuggestion(null);
     setShowForm(false);
     setEditId(null);
   };
@@ -100,16 +152,70 @@ export function TagManager({ tags }: TagManagerProps) {
           <h3 className="text-sm font-semibold text-hud-text">Email Tags</h3>
           <span className="text-xs text-hud-text-muted">({tags.length})</span>
         </div>
-        <button
-          onClick={() => {
-            resetForm();
-            setShowForm(!showForm);
-          }}
-          className="p-1.5 rounded-lg text-hud-text-muted hover:text-hud-accent hover:bg-hud-accent/10 transition-colors"
-        >
-          <Plus size={16} />
-        </button>
+        <div className="flex items-center gap-2">
+          <HudButton
+            size="sm"
+            variant="secondary"
+            onClick={() => autoTag.mutate()}
+            disabled={autoTag.isPending || autoTagStatus?.status === "running" || tags.length === 0}
+          >
+            {(autoTag.isPending || autoTagStatus?.status === "running") ? <LoadingSpinner size="sm" /> : <Sparkles size={12} />}
+            {autoTagStatus?.status === "running"
+              ? `Tagging ${autoTagStatus.processed}/${autoTagStatus.total}...`
+              : autoTag.isPending ? "Starting..." : "Re-tag All"}
+          </HudButton>
+          <HudButton
+            size="sm"
+            onClick={() => {
+              resetForm();
+              setShowForm(!showForm);
+            }}
+          >
+            <Plus size={14} />
+            Add Tag
+          </HudButton>
+        </div>
       </div>
+
+      {/* Auto-tag status */}
+      {autoTagStatus?.status === "running" && (
+        <div className="mb-3 p-2 bg-hud-accent/10 border border-hud-accent/20 rounded-lg">
+          <div className="flex items-center justify-between mb-1">
+            <p className="text-[10px] text-hud-accent">
+              Tagging emails... {autoTagStatus.processed}/{autoTagStatus.total}
+            </p>
+            <p className="text-[10px] text-hud-text-muted">
+              {autoTagStatus.total > 0 ? `${Math.round((autoTagStatus.processed / autoTagStatus.total) * 100)}%` : ""}
+            </p>
+          </div>
+          {autoTagStatus.total > 0 && (
+            <div className="h-1 bg-hud-bg-secondary rounded-full overflow-hidden">
+              <div
+                className="h-full bg-hud-accent rounded-full transition-all duration-500"
+                style={{ width: `${(autoTagStatus.processed / autoTagStatus.total) * 100}%` }}
+              />
+            </div>
+          )}
+          <p className="text-[9px] text-hud-text-muted mt-1">You can close this page — tagging continues in the background.</p>
+        </div>
+      )}
+      {autoTagStatus?.status === "done" && (
+        <div className="mb-3 p-2 bg-hud-success/10 border border-hud-success/20 rounded-lg">
+          <p className="text-[10px] text-hud-success">
+            Auto-tagged {autoTagStatus.processed} of {autoTagStatus.total} emails.
+          </p>
+        </div>
+      )}
+      {autoTagStatus?.status === "error" && (
+        <div className="mb-3 p-2 bg-hud-error/10 border border-hud-error/20 rounded-lg">
+          <p className="text-[10px] text-hud-error">{autoTagStatus.error || "Auto-tagging failed"}</p>
+        </div>
+      )}
+      {autoTag.isError && !autoTagStatus && (
+        <div className="mb-3 p-2 bg-hud-error/10 border border-hud-error/20 rounded-lg">
+          <p className="text-[10px] text-hud-error">{(autoTag.error as Error).message}</p>
+        </div>
+      )}
 
       {/* Form */}
       {showForm && (
@@ -145,6 +251,45 @@ export function TagManager({ tags }: TagManagerProps) {
             rows={2}
             className="w-full bg-hud-bg-secondary/50 border border-hud-border rounded-lg px-3 py-2 text-xs text-hud-text placeholder:text-hud-text-muted/50 resize-none focus:outline-none focus:border-hud-accent/50"
           />
+
+          {/* AI suggestion */}
+          {aiSuggestion && (
+            <div className="p-2 bg-hud-accent/5 border border-hud-accent/20 rounded-lg">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[10px] text-hud-accent font-medium flex items-center gap-1">
+                  <Sparkles size={10} /> AI Suggestion
+                </span>
+              </div>
+              <p className="text-[10px] text-hud-text-secondary whitespace-pre-wrap mb-2">{aiSuggestion}</p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => { setCriteria(aiSuggestion); setAiSuggestion(null); }}
+                  className="text-[10px] text-hud-success hover:underline flex items-center gap-0.5"
+                >
+                  <Check size={10} /> Use
+                </button>
+                <button
+                  onClick={() => setAiSuggestion(null)}
+                  className="text-[10px] text-hud-text-muted hover:text-hud-text flex items-center gap-0.5"
+                >
+                  <X size={10} /> Dismiss
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* AI Help button */}
+          <button
+            onClick={() => aiHelp.mutate()}
+            disabled={!name.trim() || aiHelp.isPending}
+            className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-hud-success/15 text-hud-success border border-hud-success/30 hover:bg-hud-success/25 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {aiHelp.isPending ? <LoadingSpinner size="sm" /> : <Sparkles size={14} />}
+            AI Help — Write Classification
+          </button>
+          {aiHelp.isError && (
+            <p className="text-[10px] text-hud-amber">{(aiHelp.error as Error).message}</p>
+          )}
 
           <div className="flex gap-2">
             <HudButton size="sm" onClick={handleSave} disabled={!name.trim()}>

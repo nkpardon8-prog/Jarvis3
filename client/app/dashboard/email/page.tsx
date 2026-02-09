@@ -1,14 +1,7 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { EmailPage } from "@/components/email/EmailPage";
 
-export default function EmailRedirect() {
-  const router = useRouter();
-
-  useEffect(() => {
-    router.replace("/dashboard/composer");
-  }, [router]);
-
-  return null;
+export default function EmailRoute() {
+  return <EmailPage />;
 }

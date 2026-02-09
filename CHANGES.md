@@ -4,6 +4,182 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-09 — Rate limits, contact cache, background auto-tag, AI classification overhaul
+
+**Author:** Omid (via Claude Code)
+**Commit:** feat: adjustable rate limits, local contact cache, background auto-tag, improved AI classification
+**Branch:** oz/email-restructure-automation
+
+**What changed:**
+- **Adjustable rate limits** — Added `rateLimitPerMin` and `rateLimitPerHour` to AutomationSettings Prisma model (defaults: 20/min, 200/hour). New PATCH endpoint to update limits without re-entering API key. Collapsible "Rate Limits" UI in AutomationAICard on Connections page. Service reads limits from DB per-user. Clamped to sane bounds (1–100/min, 1–1000/hour).
+- **Local contact cache for letter-by-letter search** — Replaced per-keystroke Gmail API search with an in-memory contact cache per user. Cache scans up to 500 recent messages (From/To/Cc headers) on first search, refreshes every 10 minutes. Each keystroke filters locally with prefix-priority sorting (local part prefix > name prefix > full email prefix > substring position). Minimum 1 character, 150ms debounce.
+- **Background auto-tag with live progress** — Re-tag All now fires-and-forget: server responds immediately, runs in background. New `GET /auto-tag/status` poll endpoint returns `{ status, processed, total }`. UI polls every 3 seconds with a progress bar and percentage. Tags update in real time (invalidates email-tags query on every poll tick). Message: "You can close this page — tagging continues in the background."
+- **Tags don't disappear during retag** — Replaced `deleteMany` + `create` with `upsert` so existing tags stay visible and update in-place as each email is reprocessed.
+- **Auto-tag processes all emails** — `retagAllEmails` calls `automationExec` with `skipRateLimit: true` so background jobs aren't blocked by per-minute caps.
+- **Improved AI classification** — Added system prompt support to all three providers (OpenAI, Anthropic, Google). Email classifier now gets a dedicated system prompt with role definition, rules, and full tag reference including descriptions/criteria. User prompt includes sender, subject, date, and content.
+- **AI Help for tag classification** — Green "AI Help — Write Classification" button in tag create/edit form. Sends tag name + existing criteria to automation AI, shows suggestion with Use/Dismiss. Clears on form reset.
+
+**Why:**
+- Rate limits were hardcoded and couldn't be adjusted per user. Contact search relied on Gmail's word-based search which failed for partial/random letter queries. Auto-tag blocked the HTTP response for minutes and tags disappeared during the process. The classification prompt was minimal — no system prompt, no tag descriptions, no sender context.
+
+**Files touched:**
+- `server/prisma/schema.prisma` — Added `rateLimitPerMin`, `rateLimitPerHour` to AutomationSettings
+- `server/src/services/automation.service.ts` — Per-user rate limiting from DB, `skipRateLimit` opt, system prompt support for all 3 providers
+- `server/src/services/email-intelligence.service.ts` — System prompt with tag criteria, upsert instead of delete+create, `onProgress` callback, `skipRateLimit` for bulk jobs
+- `server/src/routes/automation.ts` — PATCH /settings for rate limits, rate limit fields in GET/POST, 429 responses
+- `server/src/routes/email.ts` — In-memory contact cache (500 msgs, 10min TTL), background auto-tag with job status tracking, GET /auto-tag/status poll endpoint
+- `client/components/email/ComposePane.tsx` — 1-char min search, 150ms debounce
+- `client/components/email/TagManager.tsx` — AI Help button (green), auto-tag polling with live progress bar, real-time tag invalidation
+- `client/components/connections/AutomationAICard.tsx` — Collapsible rate limit controls with save
+
+---
+
+## 2026-02-09 — Eager email prefetch, infinite scroll, drafts, full-account contact search
+
+**Author:** Omid (via Claude Code)
+**Commit:** feat: eager email prefetch, infinite scroll, unified drafts, full-account contact search
+**Branch:** oz/email-restructure-automation
+
+**What changed:**
+- **Eager email prefetch** — DashboardShell now prefetches email-status → settings + inbox (parallel) → email-tags on login using `setQueryData` to inject into React Query cache. Email tab renders instantly from cache instead of showing a loading spinner.
+- **Date-range inbox pagination** — Server inbox endpoint now accepts `months` (1–12) and `before` (ISO date) query params. Gmail uses `after:EPOCH before:EPOCH` query operators; Outlook uses `$filter` with date range. Response includes `dateRange: { after, before }` for cursor-based pagination. Messages fetched in parallel batches of 20.
+- **Infinite scroll** — EmailPage uses progressive loading schedule `[1, 2, 2, 2, 2, 2]` months. EmailList has IntersectionObserver on sentinel div that triggers `loadMore()` when the user scrolls to the bottom. Deduplicates by message ID when appending chunks.
+- **Unified Draft model** — New Prisma `Draft` model with type (email/document), to, subject, body, context, provider fields. CRUD routes: `GET/POST/PATCH/DELETE /email/drafts` with userId scoping.
+- **Save to Drafts buttons** — ComposePane (email compose) and ComposeTab (AI writing assistant) both have "Save Draft" buttons that save to the same unified drafts library. DraftsTab rewritten to display both types with filter dropdown.
+- **Full-account contact search** — Rewrote contact search to use Gmail's `from:query OR to:query` full-account search instead of only searching cached loaded emails. Parallel metadata fetch in batches of 15.
+- **Cache-first EmailPage** — Derives `initialMessages` from `inboxData?.messages` (works with both cache and fresh fetches). Loading spinner only shows when `inboxLoading && allMessages.length === 0`.
+
+**Why:**
+- Email tab was slow to load — users had to wait for API calls every time they navigated to it. Eager prefetch makes it instant. The previous approach only loaded ~50 emails with no date filtering. Progressive loading gives users access to their full inbox history. Drafts were scattered — unified model simplifies the UX. Contact search was limited to loaded emails — full-account search finds anyone you've ever emailed.
+
+**Files touched:**
+- `server/prisma/schema.prisma` — New `Draft` model with User relation
+- `server/src/routes/email.ts` — Date-range inbox with `months`/`before` params, draft CRUD endpoints, full-account Gmail contact search, parallel metadata batching
+- `client/components/layout/DashboardShell.tsx` — Eager prefetch pipeline (status → settings+inbox → tags) with `setQueryData`
+- `client/components/email/EmailPage.tsx` — Progressive loading with `LOAD_SCHEDULE`, cache-first rendering, `nextBefore` cursor management
+- `client/components/email/EmailList.tsx` — IntersectionObserver infinite scroll sentinel
+- `client/components/email/ComposePane.tsx` — Save Draft button, debounced contact search
+- `client/components/composer/ComposeTab.tsx` — Save Draft button for documents
+- `client/components/composer/DraftsTab.tsx` — Rewritten for unified Draft model with email/document filter
+
+---
+
+## 2026-02-09 — Manual tagging, bulk AI re-tag, faster contacts, improved email rendering
+
+**Author:** Omid (via Claude Code)
+**Commit:** feat: manual email tagging, bulk AI re-tag, cached contact search, refined email rendering
+**Branch:** oz/email-restructure-automation
+
+**What changed:**
+- **Manual tag assignment** — Each email in EmailList now shows a tag badge (click to change) or a small tag icon (click to assign). Dropdown shows all available tags with "Remove tag" option. Filter by tag uses tagId instead of tagName for correctness.
+- **Bulk "Re-tag All" button** in TagManager — calls new `POST /auto-tag` endpoint which runs every recent email through the automation AI lane to assign tags. New `retagAllEmails()` function in email-intelligence service clears old records and re-processes all messages.
+- **Separate tag data flow** — Removed fire-and-forget `processNewEmails()` call from inbox endpoint. Added `GET /email-tags?ids=...` for batch tag lookups and `POST /tag-email` for individual assignment/removal. EmailPage fetches tags separately via React Query.
+- **Faster contact search** — 5-minute in-memory per-user contact cache built from recent 50 inbox/sent messages with parallel metadata fetching (batches of 10). Debounced input (300ms) in ComposePane. Min 1 char to search (was 2). Loading/empty states in dropdown.
+- **Improved email body rendering** — HTML emails: kept `<style>` tags (were being stripped), strip dangerous CSS properties instead. Plain text emails: new `cleanPlainText()` strips tracking URLs, base64 noise, "view in browser" lines; `linkifyPlainText()` converts URLs into short clickable links with domain labels.
+- **Prominent AI Help buttons** — Both ComposePane and ComposeTab now have a large full-width "AI Help" button above the action bar. ComposeTab context section is always visible (no toggle).
+- **automation.service** — `automationExec()` now always returns a string (handles object/null responses from providers).
+- **Inbox default** — Bumped default max from 20→50, cap from 50→100. Removed `withProcessed` query param.
+- **TagManager always visible** — Replaced toggle button with smooth scroll-to via ref.
+
+**Why:**
+- Auto-tagging on every inbox fetch was wasteful and opaque. Manual tagging gives users control; bulk re-tag gives the AI-powered convenience on demand. Contact search was slow (per-keystroke Gmail API calls) — caching makes it instant. Email rendering needed polish for real-world marketing/transactional emails.
+
+**Files touched:**
+- `server/src/routes/email.ts` — New endpoints (tag-email, email-tags, auto-tag), removed processNewEmails from inbox, improved body extraction (prefer HTML), cached contact search
+- `server/src/services/email-intelligence.service.ts` — New `retagAllEmails()` function
+- `server/src/services/automation.service.ts` — Ensure string return type
+- `client/components/email/EmailPage.tsx` — Separate email-tags query, pass emailTags/onTagEmail to EmailList, scroll-to TagManager
+- `client/components/email/EmailList.tsx` — Tag badge per email, tag assignment dropdown, filter by tagId
+- `client/components/email/EmailDetail.tsx` — `cleanPlainText()`, `linkifyPlainText()`, improved HTML sanitizer (keep styles, strip dangerous CSS)
+- `client/components/email/ComposePane.tsx` — Debounced contact search, cached contacts, prominent AI Help button
+- `client/components/email/TagManager.tsx` — "Re-tag All" button with status feedback
+- `client/components/composer/ComposeTab.tsx` — Prominent AI Help button, always-visible context section
+- `client/components/layout/DashboardShell.tsx` — Removed withProcessed from prefetch
+- `client/app/globals.css` — Refined email HTML styles (preserve inline styles, button links, hr, h4-h6, background colors)
+
+---
+
+## 2026-02-09 — Fix deliver param, people search, email body rendering, rename People to Search
+
+**Author:** Omid (via Claude Code)
+**Commit:** fix: deliver boolean, Gmail-based people search, HTML email rendering, People→Search
+**Branch:** oz/email-restructure-automation
+
+**What changed:**
+- **`deliver: "full"` → `deliver: true`** in all 4 agentExec helpers (composer, connections, integrations, calendar). Gateway protocol now requires boolean, not string. This was causing "invalid chat.send params: at /deliver: must be boolean" errors on all AI tools (composer, form builder, etc.).
+- **People search now queries Gmail directly** instead of only the empty DraftReply table. Searches `from:<query> OR to:<query>` in Gmail, extracts contacts from headers, and builds interaction history from real email data. Falls back to DraftReply for additional matches.
+- **Email body now renders HTML properly** using `dangerouslySetInnerHTML` with sanitization (strips scripts, event handlers, iframes, forms, javascript: URLs) instead of regex-based HTML stripping that mangled formatting. Added `.email-body-html` CSS styles for links, images, tables, blockquotes.
+- **Renamed "People" tab to "Search"** in DocumentsPage sub-tabs.
+- Added `googleapis` and `oauth.service` imports to composer routes for Gmail access.
+
+**Why:**
+- Gateway protocol change broke all AI tools. People search was useless without real email data. Email bodies were unreadable due to aggressive HTML stripping.
+
+**Files touched:**
+- `server/src/routes/composer.ts` — deliver fix + Gmail-based people search + imports
+- `server/src/routes/connections.ts` — deliver fix
+- `server/src/routes/calendar.ts` — deliver fix
+- `server/src/routes/integrations.ts` — deliver fix
+- `client/components/email/EmailDetail.tsx` — HTML rendering with sanitization
+- `client/components/composer/DocumentsPage.tsx` — People→Search rename
+- `client/app/globals.css` — email HTML body styles
+
+---
+
+## 2026-02-09 — Restructure Email + Documents with Automation AI Lane
+
+**Author:** Omid (via Claude Code)
+**Commit:** feat: split Email into dedicated tab, rename Composer to Documents, add Automation AI lane
+**Branch:** oz/email-restructure-automation
+
+**What changed:**
+
+- **Prisma schema**: Added 3 new models — `AutomationSettings` (per-user encrypted API key for cheap LLM), `ProcessedEmail` (AI summaries + tag assignments, idempotent via `@@unique([userId, emailId])`), `EmailContent` (cached full email bodies). Added relations to `User` model.
+- **`server/src/services/automation.service.ts`** (new): Direct HTTP calls to OpenAI, Anthropic, and Google AI APIs for automation workloads. `automationExec(userId, prompt)` decrypts per-user API key and routes to the correct provider. 30s timeout. Throws `AutomationNotConfiguredError` for graceful degradation.
+- **`server/src/services/email-intelligence.service.ts`** (new): Fire-and-forget email processing pipeline. `processNewEmails()` filters to 30-day window, batches 10 unprocessed emails, generates AI summaries + tag assignments via automation lane, stores in `ProcessedEmail`. Idempotent — skips already-processed emails. Ensures "Miscellaneous" system tag exists.
+- **`server/src/routes/automation.ts`** (new): CRUD for automation settings (`GET/POST/DELETE /api/automation/settings`), connection test (`POST /api/automation/test`), general-purpose AI assist (`POST /api/automation/assist`). API key encrypted via `crypto.service.ts`.
+- **`server/src/routes/email.ts`**: Added `POST /send` (Gmail RFC 2822 + Microsoft Graph sendMail), `GET /message/:id` (full body fetch with `EmailContent` cache), `GET /search-contacts` (sent+received contact dedup from Gmail), `GET /processed` (processed email data by IDs). Inbox endpoint now triggers fire-and-forget intelligence pipeline and supports `?withProcessed=true` to return summaries/tags inline.
+- **`server/src/routes/composer.ts`**: Added "Miscellaneous" to `SYSTEM_TAGS` for fallback classification.
+- **`server/src/index.ts`**: Mounted `/api/automation` routes.
+- **`client/components/layout/TabNavigation.tsx`**: Added Email tab (Mail icon), renamed Composer to Documents (FileText icon). Tab order: Home, Connections, Calendar, CRM, Email, Documents, Chat, Skills.
+- **`client/app/dashboard/email/page.tsx`**: Changed from redirect to rendering `<EmailPage />`.
+- **`client/app/dashboard/documents/page.tsx`** (new): Renders `<DocumentsPage />`.
+- **`client/app/dashboard/composer/page.tsx`**: Changed to redirect to `/dashboard/documents`.
+- **`client/components/email/EmailPage.tsx`**: Complete rewrite — split layout with email list (left) and compose/detail pane (right). Tag filter buttons, unread filter, compact provider indicator, collapsible tag manager. Triggers intelligence pipeline via `withProcessed=true`.
+- **`client/components/email/EmailList.tsx`** (new): Scrollable email list with AI summaries, tag badges, unread dots, sender extraction, relative dates, filter support.
+- **`client/components/email/EmailDetail.tsx`** (new): Full email body view fetched via `GET /message/:id`, reply button pre-fills compose pane, HTML stripping for display.
+- **`client/components/email/ComposePane.tsx`** (new): Email compose with contact search autocomplete, send via `POST /send`, AI compose help via automation lane, suggestion accept/dismiss.
+- **`client/components/composer/DocumentsPage.tsx`** (new): Composer without Inbox sub-tab, renamed to "Documents", defaults to Compose tab. 5 sub-tabs: Compose, Drafts, Invoices, PDFs, People.
+- **`client/components/connections/AutomationAICard.tsx`** (new): Provider/model/API key config UI for automation lane. Supports OpenAI (gpt-4o-mini, gpt-4.1-mini, gpt-4.1-nano), Anthropic (claude-haiku-4-5, claude-3-5-haiku), Google (gemini-2.0-flash-lite, gemini-2.0-flash). Test connection, update, remove buttons.
+- **`client/components/connections/ConnectionsPage.tsx`**: Added Automation AI section with Sparkles icon between Active Model and Provider API Keys.
+- **`client/components/layout/DashboardShell.tsx`**: Added email inbox prefetch (2-min staleTime) so data is ready when navigating to Email tab.
+
+**Why:**
+- Email is the highest-value daily workflow for business owners — it deserves its own dedicated tab with a professional split layout, not a sub-tab inside Composer. The Automation AI lane enables cheap email intelligence (summaries, auto-tagging, compose help) without consuming expensive primary chat model tokens. Documents (renamed Composer) focuses on writing/document workflows without the Inbox sub-tab.
+
+**Files touched:**
+- `server/prisma/schema.prisma` — 3 new models + User relations
+- `server/src/services/automation.service.ts` — New: direct LLM API calls
+- `server/src/services/email-intelligence.service.ts` — New: email processing pipeline
+- `server/src/routes/automation.ts` — New: automation settings + assist endpoints
+- `server/src/routes/email.ts` — Send, full body, contacts, processed, intelligence trigger
+- `server/src/routes/composer.ts` — Miscellaneous system tag
+- `server/src/index.ts` — Mount automation routes
+- `client/components/layout/TabNavigation.tsx` — Email + Documents tabs
+- `client/components/layout/DashboardShell.tsx` — Inbox prefetch
+- `client/app/dashboard/email/page.tsx` — Render EmailPage
+- `client/app/dashboard/documents/page.tsx` — New: Documents route
+- `client/app/dashboard/composer/page.tsx` — Redirect to documents
+- `client/components/email/EmailPage.tsx` — Complete rewrite (split layout)
+- `client/components/email/EmailList.tsx` — New: email list component
+- `client/components/email/EmailDetail.tsx` — New: email detail component
+- `client/components/email/ComposePane.tsx` — New: compose pane component
+- `client/components/composer/DocumentsPage.tsx` — New: Documents page
+- `client/components/connections/AutomationAICard.tsx` — New: automation config UI
+- `client/components/connections/ConnectionsPage.tsx` — Automation AI section
+
+---
+
 ## 2026-02-08 — Evolve Email into Composer: unified text/document agent area with 6 sub-tabs
 
 **Author:** Omid (via Claude Code)

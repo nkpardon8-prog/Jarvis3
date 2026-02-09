@@ -20,6 +20,7 @@ import gatewayRoutes from "./routes/gateway";
 import integrationsRoutes from "./routes/integrations";
 import driveRoutes from "./routes/drive";
 import composerRoutes from "./routes/composer";
+import automationRoutes from "./routes/automation";
 import { gateway } from "./gateway/connection";
 import { setupSocketIO } from "./socket";
 import multer from "multer";
@@ -66,6 +67,8 @@ app.use("/api/oauth", oauthRoutes);
 app.use("/api/gateway", gatewayRoutes);
 app.use("/api/integrations", integrationsRoutes);
 app.use("/api/drive", driveRoutes);
+
+app.use("/api/automation", automationRoutes);
 
 // Composer routes — apply multer for file upload endpoints
 app.use("/api/composer/upload", composerUpload.single("file"));

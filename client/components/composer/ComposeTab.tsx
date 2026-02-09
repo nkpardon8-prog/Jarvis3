@@ -1,23 +1,21 @@
 "use client";
 
 import { useState, useRef, useCallback } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import { HudButton } from "@/components/ui/HudButton";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import {
   PenLine,
-  Wand2,
   AlignLeft,
-  Minimize2,
-  Maximize2,
   Sparkles,
   Check,
   X,
   Upload,
   FileText,
   Trash2,
+  Save,
 } from "lucide-react";
 
 interface ComposeTabProps {
@@ -41,12 +39,25 @@ interface UploadedFileInfo {
 }
 
 export function ComposeTab({ recipient, onClearRecipient }: ComposeTabProps) {
+  const queryClient = useQueryClient();
   const [text, setText] = useState("");
   const [suggestion, setSuggestion] = useState<string | null>(null);
   const [context, setContext] = useState("");
-  const [showContext, setShowContext] = useState(false);
   const [attachedFile, setAttachedFile] = useState<UploadedFileInfo | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const aiHelp = useMutation({
+    mutationFn: async () => {
+      const prompt = `Help me write or improve this text.\n\nText so far: ${text || "(empty)"}\n${context ? `\nContext: ${context}` : ""}\n\nPlease write or improve the text. Return only the improved text, nothing else.`;
+      const res = await api.post<{ response: string }>("/automation/assist", { prompt });
+      if (!res.ok) throw new Error(res.error || "AI Help not available. Configure Automation AI in Connections.");
+      return res.data!;
+    },
+    onSuccess: (data) => {
+      const result = typeof data?.response === "string" ? data.response : JSON.stringify(data?.response ?? "");
+      setSuggestion(result);
+    },
+  });
 
   const assist = useMutation({
     mutationFn: async ({ instruction }: { instruction: string }) => {
@@ -60,6 +71,22 @@ export function ComposeTab({ recipient, onClearRecipient }: ComposeTabProps) {
     },
     onSuccess: (data) => {
       setSuggestion(data.improved);
+    },
+  });
+
+  const saveDraft = useMutation({
+    mutationFn: async () => {
+      const res = await api.post("/email/drafts", {
+        type: "document",
+        subject: context ? context.slice(0, 100) : "Untitled draft",
+        body: text,
+        context: context || null,
+      });
+      if (!res.ok) throw new Error(res.error || "Failed to save draft");
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["drafts"] });
     },
   });
 
@@ -178,14 +205,23 @@ export function ComposeTab({ recipient, onClearRecipient }: ComposeTabProps) {
         </GlassPanel>
       )}
 
-      {/* AI assist toolbar */}
-      <GlassPanel>
-        <div className="flex items-center gap-2 mb-3">
-          <Wand2 size={14} className="text-hud-accent" />
-          <p className="text-xs font-medium text-hud-text">AI Assist</p>
-          {assist.isPending && <LoadingSpinner size="sm" />}
-        </div>
+      {/* AI Help — big prominent button */}
+      <HudButton
+        size="lg"
+        onClick={() => aiHelp.mutate()}
+        disabled={!text.trim() || aiHelp.isPending}
+        className="w-full justify-center py-3 text-sm"
+      >
+        {aiHelp.isPending ? <LoadingSpinner size="sm" /> : <Sparkles size={18} />}
+        AI Help
+      </HudButton>
+      {aiHelp.isError && (
+        <p className="text-xs text-hud-amber">{(aiHelp.error as Error).message}</p>
+      )}
 
+      {/* Specific AI actions (optional) */}
+      <GlassPanel>
+        <p className="text-[10px] text-hud-text-muted mb-2">(optional) Or choose a specific action:</p>
         <div className="flex flex-wrap gap-2">
           {AI_ACTIONS.map((action) => (
             <HudButton
@@ -199,7 +235,9 @@ export function ComposeTab({ recipient, onClearRecipient }: ComposeTabProps) {
             </HudButton>
           ))}
         </div>
-
+        {assist.isPending && (
+          <div className="mt-2"><LoadingSpinner size="sm" /></div>
+        )}
         {assist.isError && (
           <p className="text-xs text-hud-error mt-2">
             {(assist.error as Error).message}
@@ -207,16 +245,35 @@ export function ComposeTab({ recipient, onClearRecipient }: ComposeTabProps) {
         )}
       </GlassPanel>
 
-      {/* Context / attachments */}
-      <div className="flex gap-2">
+      {/* Additional context (optional) */}
+      <GlassPanel>
+        <div className="flex items-center gap-2 mb-2">
+          <AlignLeft size={14} className="text-hud-text-muted" />
+          <p className="text-xs font-medium text-hud-text">Additional Context</p>
+          <span className="text-[10px] text-hud-text-muted">(optional)</span>
+        </div>
+        <textarea
+          value={context}
+          onChange={(e) => setContext(e.target.value)}
+          placeholder="Add context for the AI to consider (e.g., who the audience is, the purpose of the text, background info)..."
+          rows={3}
+          className="w-full bg-hud-bg-secondary/50 border border-hud-border rounded-lg px-3 py-2 text-xs text-hud-text placeholder:text-hud-text-muted/50 resize-none focus:outline-none focus:border-hud-accent/50"
+        />
+      </GlassPanel>
+
+      {/* Save Draft + Attach file */}
+      <div className="flex gap-2 flex-wrap">
         <HudButton
           size="sm"
-          variant="secondary"
-          onClick={() => setShowContext(!showContext)}
+          onClick={() => saveDraft.mutate()}
+          disabled={!text.trim() || saveDraft.isPending}
         >
-          {showContext ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
-          Context
+          {saveDraft.isPending ? <LoadingSpinner size="sm" /> : <Save size={12} />}
+          Save Draft
         </HudButton>
+        {saveDraft.isSuccess && (
+          <span className="text-[10px] text-hud-success self-center">Saved!</span>
+        )}
         <HudButton
           size="sm"
           variant="secondary"
@@ -234,22 +291,6 @@ export function ComposeTab({ recipient, onClearRecipient }: ComposeTabProps) {
           className="hidden"
         />
       </div>
-
-      {showContext && (
-        <GlassPanel>
-          <div className="flex items-center gap-2 mb-2">
-            <AlignLeft size={14} className="text-hud-text-muted" />
-            <p className="text-xs font-medium text-hud-text">Additional Context</p>
-          </div>
-          <textarea
-            value={context}
-            onChange={(e) => setContext(e.target.value)}
-            placeholder="Add context for the AI to consider (e.g., who the audience is, the purpose of the text, background info)..."
-            rows={4}
-            className="w-full bg-hud-bg-secondary/50 border border-hud-border rounded-lg px-3 py-2 text-xs text-hud-text placeholder:text-hud-text-muted/50 resize-none focus:outline-none focus:border-hud-accent/50"
-          />
-        </GlassPanel>
-      )}
     </div>
   );
 }

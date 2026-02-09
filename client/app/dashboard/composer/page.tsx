@@ -1,7 +1,14 @@
 "use client";
 
-import { ComposerPage } from "@/components/composer/ComposerPage";
+import { useRouter } from "next/navigation";
+import { useEffect } from "react";
 
-export default function ComposerRoute() {
-  return <ComposerPage />;
+export default function ComposerRedirect() {
+  const router = useRouter();
+
+  useEffect(() => {
+    router.replace("/dashboard/documents");
+  }, [router]);
+
+  return null;
 }
