@@ -1,11 +1,19 @@
 import { Router, Response } from "express";
 import { google } from "googleapis";
+import { randomBytes, createHash } from "crypto";
 import { authMiddleware } from "../middleware/auth";
 import { AuthRequest } from "../types";
 import { prisma } from "../services/prisma";
 import { getTokensForProvider, getGoogleApiClient } from "../services/oauth.service";
 import { retagAllEmails } from "../services/email-intelligence.service";
 import { AutomationNotConfiguredError } from "../services/automation.service";
+import {
+  provisionOpenClawGoogleProxy,
+  getProvisionStatus,
+  ensureProvisioned,
+  resetBackfillFlag,
+  ProvisionError,
+} from "../services/openclaw-google-proxy.service";
 
 const router = Router();
 
@@ -107,6 +115,11 @@ router.get("/status", async (req: AuthRequest, res: Response) => {
     const userId = req.user!.userId;
     const googleTokens = await getTokensForProvider(userId, "google");
     const msTokens = await getTokensForProvider(userId, "microsoft");
+
+    // Idempotent backfill: if Google connected but not provisioned, trigger in background
+    if (googleTokens) {
+      ensureProvisioned(userId);
+    }
 
     res.json({
       ok: true,
@@ -866,6 +879,125 @@ router.get("/search-contacts", async (req: AuthRequest, res: Response) => {
     res.json({ ok: true, data: { contacts: matches.slice(0, 15) } });
   } catch (err: any) {
     res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── GET /proxy-token — Check if proxy token exists ─────────
+
+router.get("/proxy-token", async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const token = await prisma.proxyApiToken.findUnique({ where: { userId } });
+
+    res.json({
+      ok: true,
+      data: {
+        exists: !!token,
+        label: token?.label || null,
+        createdAt: token?.createdAt || null,
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── POST /proxy-token — Generate/regenerate proxy token ────
+
+router.post("/proxy-token", async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const label = req.body.label || "OpenClaw Gmail Proxy";
+
+    // Generate a 32-byte random token
+    const plaintext = randomBytes(32).toString("hex");
+    const tokenHash = createHash("sha256").update(plaintext).digest("hex");
+
+    // Upsert — regenerate replaces old token
+    await prisma.proxyApiToken.upsert({
+      where: { userId },
+      update: { tokenHash, label },
+      create: { userId, tokenHash, label },
+    });
+
+    // Return plaintext ONCE — it's never stored
+    res.json({
+      ok: true,
+      data: {
+        token: plaintext,
+        label,
+        message: "Save this token — it will not be shown again.",
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── DELETE /proxy-token — Revoke proxy token ───────────────
+
+router.delete("/proxy-token", async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+
+    const existing = await prisma.proxyApiToken.findUnique({ where: { userId } });
+    if (!existing) {
+      res.status(404).json({ ok: false, error: "No proxy token found" });
+      return;
+    }
+
+    await prisma.proxyApiToken.delete({ where: { userId } });
+
+    res.json({ ok: true, data: { revoked: true } });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── GET /proxy-provision-status — Read provisioning status ──
+
+router.get("/proxy-provision-status", async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const status = await getProvisionStatus(userId);
+    res.json({ ok: true, data: status });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── POST /proxy-token/deploy — Generate + deploy to OpenClaw
+
+router.post("/proxy-token/deploy", async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const force = req.body.force === true;
+
+    // Reset backfill flag so manual retry always runs
+    resetBackfillFlag(userId);
+
+    const provisioned = await provisionOpenClawGoogleProxy(userId, { force });
+
+    res.json({
+      ok: true,
+      data: {
+        deployed: provisioned.deployed,
+        skillVerified: provisioned.skillVerified,
+        proxyUrl: provisioned.proxyUrl,
+        tokenRotated: provisioned.tokenRotated,
+        message: provisioned.skillVerified
+          ? "Google proxy deployed and skill verified. OpenClaw can now access Google services."
+          : "Google proxy deployed. Skill may take a moment to be detected by OpenClaw.",
+      },
+    });
+  } catch (err: any) {
+    console.error("[Email] Proxy deploy error:", err.message);
+    const statusCode = err instanceof ProvisionError ? 400 : 500;
+    res.status(statusCode).json({
+      ok: false,
+      error: err.message,
+      errorCode: err instanceof ProvisionError ? err.code : "unknown",
+    });
   }
 });
 

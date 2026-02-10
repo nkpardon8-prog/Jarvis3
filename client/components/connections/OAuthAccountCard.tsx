@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import { HudButton } from "@/components/ui/HudButton";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
@@ -13,8 +13,22 @@ import {
   Save,
   Key,
   Trash2,
+  RefreshCw,
+  CloudOff,
+  Cloud,
 } from "lucide-react";
 import { api } from "@/lib/api";
+
+interface ProvisionStatusData {
+  status: "pending" | "success" | "failed" | "none";
+  errorCode: string | null;
+  errorMessage: string | null;
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  hasProxyToken: boolean;
+  googleConnected: boolean;
+  gatewayConnected: boolean;
+}
 
 interface OAuthAccountCardProps {
   provider: "google" | "microsoft";
@@ -96,6 +110,36 @@ export function OAuthAccountCard({
     type: "success" | "error";
     text: string;
   } | null>(null);
+
+  // Provisioning status (Google only, when connected)
+  const [provisionStatus, setProvisionStatus] = useState<ProvisionStatusData | null>(null);
+  const [retrying, setRetrying] = useState(false);
+
+  const fetchProvisionStatus = useCallback(async () => {
+    if (provider !== "google" || !status.connected) return;
+    try {
+      const res = await api.get<ProvisionStatusData>("/email/proxy-provision-status");
+      if (res.ok && res.data) setProvisionStatus(res.data);
+    } catch {
+      // Silently fail — provisioning status is informational
+    }
+  }, [provider, status.connected]);
+
+  useEffect(() => {
+    fetchProvisionStatus();
+  }, [fetchProvisionStatus]);
+
+  const handleRetryProvision = async () => {
+    setRetrying(true);
+    try {
+      await api.post("/email/proxy-token/deploy", { force: true });
+      // Re-fetch status after deploy attempt
+      await fetchProvisionStatus();
+    } catch {
+      // Will show in provisioning status on next fetch
+    }
+    setRetrying(false);
+  };
 
   const info = PROVIDER_INFO[provider];
 
@@ -234,6 +278,72 @@ export function OAuthAccountCard({
                   {SCOPE_LABELS[scope] || scope.split("/").pop() || scope}
                 </span>
               ))}
+            </div>
+          )}
+
+          {/* OpenClaw Proxy Provisioning Status (Google only) */}
+          {provider === "google" && provisionStatus && (
+            <div className="border border-hud-border rounded-lg px-3 py-2 space-y-1.5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  {provisionStatus.status === "success" ? (
+                    <Cloud size={12} className="text-hud-success" />
+                  ) : provisionStatus.status === "pending" ? (
+                    <RefreshCw size={12} className="text-hud-amber animate-spin" />
+                  ) : (
+                    <CloudOff size={12} className="text-hud-error" />
+                  )}
+                  <span className="text-[10px] font-medium text-hud-text-secondary">
+                    OpenClaw Proxy
+                  </span>
+                </div>
+                <span
+                  className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${
+                    provisionStatus.status === "success"
+                      ? "bg-hud-success/10 text-hud-success"
+                      : provisionStatus.status === "pending"
+                        ? "bg-hud-amber/10 text-hud-amber"
+                        : provisionStatus.status === "failed"
+                          ? "bg-hud-error/10 text-hud-error"
+                          : "bg-hud-text-muted/10 text-hud-text-muted"
+                  }`}
+                >
+                  {provisionStatus.status === "none" ? "Not deployed" : provisionStatus.status}
+                </span>
+              </div>
+              {provisionStatus.status === "failed" && provisionStatus.errorMessage && (
+                <p className="text-[10px] text-hud-error/80">
+                  {provisionStatus.errorMessage}
+                </p>
+              )}
+              {provisionStatus.lastAttemptAt && (
+                <p className="text-[10px] text-hud-text-muted">
+                  Last attempt: {new Date(provisionStatus.lastAttemptAt).toLocaleString()}
+                </p>
+              )}
+              {(provisionStatus.status === "failed" || provisionStatus.status === "none") && (
+                <HudButton
+                  variant="secondary"
+                  size="sm"
+                  onClick={handleRetryProvision}
+                  disabled={retrying || !provisionStatus.gatewayConnected}
+                  className="w-full"
+                >
+                  {retrying ? (
+                    <LoadingSpinner size="sm" />
+                  ) : (
+                    <>
+                      <RefreshCw size={10} />
+                      {provisionStatus.status === "none" ? "Deploy to OpenClaw" : "Retry Provisioning"}
+                    </>
+                  )}
+                </HudButton>
+              )}
+              {!provisionStatus.gatewayConnected && (provisionStatus.status === "failed" || provisionStatus.status === "none") && (
+                <p className="text-[10px] text-hud-text-muted">
+                  Gateway disconnected — connect gateway first
+                </p>
+              )}
             </div>
           )}
 
