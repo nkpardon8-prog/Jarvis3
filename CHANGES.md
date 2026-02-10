@@ -4,6 +4,37 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-10 — Fix "invalid config" error: migrate workflow storage from gateway config to Prisma DB
+
+**Author:** Nick (via Claude Code)
+**Commit:** fix: migrate workflow metadata storage from gateway config to Prisma DB — fixes "invalid config" error on all template workflows
+**Branch:** main
+
+**What changed:**
+- **schema.prisma — Added `Workflow` model**: New Prisma model to store workflow metadata (id, userId, templateId, name, status, schedule, cronJobId, cronJobName, installedSkills, storedCredentials, generatedPrompt, errorMessage, timestamps). Added `workflows Workflow[]` relation on User model. This replaces the previous approach of storing workflows in the gateway config at `config.jarvis.workflows[]`.
+- **workflows.ts — Complete migration of all CRUD endpoints to Prisma**: Rewrote all 7 workflow endpoints (GET list, POST create template, POST create custom, PUT update, PATCH toggle, DELETE, POST run, GET history) to use `prisma.workflow.findMany/findFirst/create/update/delete` instead of `config.get`/`patchConfig`/`WorkflowInstance` type. Removed the `patchConfig` helper and `WorkflowInstance` type entirely. Added `serializeWorkflow()` helper to convert Prisma rows (with JSON string fields) to API response shape.
+- **workflows.ts — Fixed `getWorkflowPrompt` function**: Updated type signature to accept either a Prisma row or serialized object instead of the removed `WorkflowInstance` type.
+- **workflows.ts — Fixed templates endpoint**: Removed `storedEnvKeys` lookup from gateway config (which was being rejected). Credential `alreadyStored` is now always `false` — the UI handles this by always showing credential fields.
+- **workflows.ts — All endpoints now scoped by userId**: Every Prisma query includes `where: { userId }` to ensure multi-user data isolation.
+
+**Why:**
+- The gateway config uses strict schema validation with `additionalProperties: false`. Only specific top-level keys are allowed (`meta`, `wizard`, `agents`, `messages`, `commands`, `channels`, `gateway`, `skills`, `plugins`). The `jarvis` key and `storedEnvKeys` key were both rejected, causing every workflow creation to fail with "invalid config" error. This was the wrong storage layer — per the project's core architecture principle, "user-specific data lives in the local Prisma DB." Moving to Prisma also enables proper multi-user isolation (userId scoping) and eliminates hash-conflict retry logic.
+
+**Files touched:**
+- `server/prisma/schema.prisma` — Added Workflow model + User relation
+- `server/src/routes/workflows.ts` — Complete rewrite of all CRUD operations from gateway config to Prisma DB
+
+**Verified:**
+- All 5 pre-built templates create successfully (github-triage, google-workspace-assistant, notion-curator, social-listening, smart-home-ops)
+- SSE streaming progress works for template creation
+- Pause/Resume toggle works (cron.remove/cron.add)
+- Update schedule/instructions works (recreates cron job)
+- Delete works (removes cron + DB row)
+- History endpoint works
+- All workflows get valid cronJobIds from gateway
+
+---
+
 ## 2026-02-10 — Fix workflow creation hang: SSE streaming progress + cron.add direct
 
 **Author:** Nick (via Claude Code)

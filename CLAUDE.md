@@ -184,15 +184,14 @@ async function agentExec(prompt: string, timeoutMs = 60000) {
 - **OAuth client credentials** (Google/Microsoft): Stored **per-user** in Prisma `OAuthCredential` table with AES-256-GCM encrypted `clientSecret`. Resolved via `resolveCredentials(userId, provider)` with legacy env var fallback.
 - **OAuth tokens** (access/refresh): Stored in Prisma `OAuthToken` table. Refresh tokens encrypted at rest via `crypto.service.ts`.
 - **Custom integration credentials**: Stored via `agentExec()` to `~/.openclaw/.env` using idempotent update-or-append pattern
-- **Config metadata tracking**: `config.storedEnvKeys` object tracks which env vars have been stored (for fast status lookups without querying the agent)
+- **Workflow metadata**: Stored per-user in Prisma `Workflow` table (NOT in gateway config — the gateway rejects custom keys via `additionalProperties: false`)
 
 ### Gateway config namespace conventions
 
+**IMPORTANT**: The gateway config uses strict schema validation with `additionalProperties: false`. Only these top-level keys are allowed: `meta`, `wizard`, `agents`, `messages`, `commands`, `channels`, `gateway`, `skills`, `plugins`. Custom keys like `jarvis`, `storedEnvKeys`, etc. are REJECTED. User-specific metadata (workflows, integrations) should be stored in Prisma instead.
+
 ```
 config.models.providers.<provider>.apiKey    — LLM provider API keys (redundant store)
-config.storedEnvKeys.<ENV_VAR_NAME>          — Boolean flags for configured env vars
-config.customIntegrations[]                  — Custom API integration metadata array
-config.jarvis.workflows[]                    — Workflow instance metadata array
 config.agents.defaults.model.primary         — Active model selection
 ```
 
@@ -268,13 +267,13 @@ The AI-powered custom builder (`POST /custom`) works by:
 3. Auto-installing ClawHub skills via `skills.install`
 4. Auto-creating custom skills via `agentExec` writing SKILL.md files
 5. Creating the cron job with the generated prompt via `cron.add`
-6. Saving metadata to `config.jarvis.workflows[]`
+6. Saving metadata to Prisma `Workflow` table
 
 Falls back to a manually-built prompt if agent JSON parsing fails.
 
-### Workflow instance data (stored at `config.jarvis.workflows[]`)
+### Workflow instance data (stored in Prisma `Workflow` table)
 
-Fields: `id`, `templateId`, `name`, `status` (setting-up/active/paused/error), `schedule`, `customTrigger`, `additionalInstructions`, `cronJobId`, `cronJobName` (pattern: `jarvis-wf-{templateId}-{shortUuid}`), `installedSkills`, `storedCredentials`, `createdAt`, `updatedAt`, `errorMessage`.
+Fields: `id`, `userId`, `templateId`, `name`, `status` (setting-up/active/paused/error), `schedule` (JSON string), `customTrigger`, `additionalInstructions`, `cronJobId`, `cronJobName` (pattern: `jarvis-wf-{templateId}-{shortUuid}`), `installedSkills` (JSON array string), `storedCredentials` (JSON array string), `generatedPrompt`, `errorMessage`, `createdAt`, `updatedAt`.
 
 ### Client components
 
@@ -287,7 +286,7 @@ Fields: `id`, `templateId`, `name`, `status` (setting-up/active/paused/error), `
 
 ## Database (Prisma/SQLite)
 
-Models: `User`, `Todo`, `EmailTag`, `EmailSettings`, `CrmSettings`, `OAuthToken`, `OAuthCredential`, `Notification`, `OnboardingProgress`, `ProxyApiToken`, `ProxyProvisionStatus`
+Models: `User`, `Todo`, `EmailTag`, `EmailSettings`, `CrmSettings`, `OAuthToken`, `OAuthCredential`, `Notification`, `OnboardingProgress`, `ProxyApiToken`, `ProxyProvisionStatus`, `Workflow`, `SavedAgenda`
 
 Key relationships:
 - `OAuthToken` has `@@unique([userId, provider])` — one token per provider per user

@@ -39,6 +39,7 @@ model User {
   proxyProvisionStatus ProxyProvisionStatus?
   schedulePreferences  SchedulePreferences?
   savedAgendas         SavedAgenda[]
+  workflows            Workflow[]
 }
 
 model Todo {
@@ -330,6 +331,27 @@ model SchedulePreferences {
   notes             String   @default("")
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Workflow {
+  id                     String   @id @default(uuid())
+  userId                 String
+  templateId             String   // e.g. "github-triage" or "custom-my-slug"
+  name                   String
+  status                 String   @default("setting-up") // setting-up, active, paused, error
+  schedule               String   // JSON: { kind, expr?, intervalMs?, tz? }
+  customTrigger          String?
+  additionalInstructions String   @default("")
+  cronJobId              String?
+  cronJobName            String
+  installedSkills        String   @default("[]") // JSON array
+  storedCredentials      String   @default("[]") // JSON array
+  generatedPrompt        String?  // For custom workflows
+  errorMessage           String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
