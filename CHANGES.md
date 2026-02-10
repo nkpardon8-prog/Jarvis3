@@ -4,6 +4,30 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-10 — AI Agenda persistence + pre-run for tomorrow
+
+**Author:** Nick (via Claude Code)
+**Commit:** feat: AI agenda persistence with Today/Tomorrow toggle and auto-load
+**Branch:** main
+
+**What changed:**
+- **SavedAgenda Prisma model**: New model with `@@unique([userId, date])` for idempotent upserts. Fields: `items` (JSON-serialized AgendaItem[]), `raw` (fallback text), `eventCount`, `taskCount`, timestamps. Cascade-deletes with User.
+- **GET `/calendar/agenda?date=YYYY-MM-DD`**: New endpoint to retrieve a saved agenda by date. Returns parsed items + `savedAt` timestamp, or `null` if no saved agenda exists.
+- **POST `/calendar/build-agenda` now accepts `{ date }` param**: Builds agenda for arbitrary dates (not just today). Fetches events for the target date via refactored `fetchCalendarEventsForDate()`. AI prompt says "The schedule date is..." for future dates. **Persists result** via `prisma.savedAgenda.upsert()` after generation.
+- **`fetchCalendarEventsForDate(userId, targetDate)` refactor**: Extracted from `fetchCalendarEvents()` to support building agendas for any date. Original wrapper still works for existing callers.
+- **AIAgenda.tsx Today/Tomorrow toggle**: Pill-style toggle in header (matching CalendarView style). Computes `dateKey` (YYYY-MM-DD) from selection. Auto-loads saved agenda via `useQuery(["saved-agenda", dateKey])` on mount/toggle. Shows "Generated [time]" indicator. Button text adapts: "Rebuild" when agenda exists, "Build Tomorrow's Agenda" for tomorrow. Empty state text contextual for tomorrow.
+
+**Why:**
+- AI agenda was lost on every page refresh — users had to rebuild each time. Persisting to the DB makes the generated agenda durable and instantly available on revisit.
+- Pre-building tomorrow's agenda lets users prepare the night before, seeing what's coming up without waiting until the next morning.
+
+**Files touched:**
+- `server/prisma/schema.prisma` — Added `SavedAgenda` model + User relation
+- `server/src/routes/calendar.ts` — Added GET `/agenda`, refactored `fetchCalendarEvents` → `fetchCalendarEventsForDate`, modified POST `/build-agenda` to accept date + persist
+- `client/components/calendar/AIAgenda.tsx` — Today/Tomorrow toggle, auto-load via useQuery, "Generated at" indicator, contextual empty state
+
+---
+
 ## 2026-02-10 — Calendar 2-way sync, Sync button, error banners, debug logging, EmailList hydration fix
 
 **Author:** Nick (via Claude Code)

@@ -151,15 +151,15 @@ async function fetchMicrosoftCalendarEvents(
   return (data.value || []).map(mapMicrosoftEvent);
 }
 
-async function fetchCalendarEvents(userId: string): Promise<CalendarEvent[]> {
-  const today = startOfDay(new Date());
-  const tomorrow = addDays(today, 1);
+async function fetchCalendarEventsForDate(userId: string, targetDate: Date): Promise<CalendarEvent[]> {
+  const dayStart = startOfDay(targetDate);
+  const dayEnd = addDays(dayStart, 1);
   const events: CalendarEvent[] = [];
 
   const googleTokens = await getTokensForProvider(userId, "google");
   if (googleTokens) {
     try {
-      const gcal = await fetchGoogleCalendarEvents(userId, googleTokens.accessToken, today, tomorrow);
+      const gcal = await fetchGoogleCalendarEvents(userId, googleTokens.accessToken, dayStart, dayEnd);
       events.push(...gcal);
     } catch {}
   }
@@ -167,13 +167,17 @@ async function fetchCalendarEvents(userId: string): Promise<CalendarEvent[]> {
   const msTokens = await getTokensForProvider(userId, "microsoft");
   if (msTokens) {
     try {
-      const mscal = await fetchMicrosoftCalendarEvents(msTokens.accessToken, today, tomorrow);
+      const mscal = await fetchMicrosoftCalendarEvents(msTokens.accessToken, dayStart, dayEnd);
       events.push(...mscal);
     } catch {}
   }
 
   events.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
   return events;
+}
+
+async function fetchCalendarEvents(userId: string): Promise<CalendarEvent[]> {
+  return fetchCalendarEventsForDate(userId, new Date());
 }
 
 // ─── GET /events — List calendar events ──────────────────
@@ -502,27 +506,99 @@ router.put("/preferences", async (req: AuthRequest, res: Response) => {
   }
 });
 
+// ─── Saved Agenda ────────────────────────────────────────
+
+function toDateKey(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function parseDateKey(key: string): Date {
+  const [y, m, d] = key.split("-").map(Number);
+  return new Date(y, m - 1, d);
+}
+
+router.get("/agenda", async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const { date } = req.query;
+
+    const dateKey = date && /^\d{4}-\d{2}-\d{2}$/.test(String(date))
+      ? String(date)
+      : toDateKey(new Date());
+
+    const saved = await prisma.savedAgenda.findUnique({
+      where: { userId_date: { userId, date: dateKey } },
+    });
+
+    if (!saved) {
+      res.json({ ok: true, data: null });
+      return;
+    }
+
+    let agenda = null;
+    try {
+      agenda = JSON.parse(saved.items);
+      if (!Array.isArray(agenda) || agenda.length === 0) agenda = null;
+    } catch {
+      agenda = null;
+    }
+
+    const displayDate = parseDateKey(dateKey).toLocaleDateString("en-US", {
+      weekday: "long", year: "numeric", month: "long", day: "numeric",
+    });
+
+    res.json({
+      ok: true,
+      data: {
+        agenda,
+        raw: agenda ? undefined : saved.raw,
+        date: displayDate,
+        dateKey,
+        eventCount: saved.eventCount,
+        taskCount: saved.taskCount,
+        savedAt: saved.updatedAt.toISOString(),
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // ─── Build AI Agenda ─────────────────────────────────────
 
 router.post("/build-agenda", async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.userId;
+    const { date: requestedDate } = req.body;
 
-    const today = new Date();
-    const dateStr = today.toLocaleDateString("en-US", {
+    // Determine target date
+    let targetDate: Date;
+    let dateKey: string;
+    if (requestedDate && /^\d{4}-\d{2}-\d{2}$/.test(requestedDate)) {
+      targetDate = parseDateKey(requestedDate);
+      dateKey = requestedDate;
+    } else {
+      targetDate = new Date();
+      dateKey = toDateKey(targetDate);
+    }
+
+    const todayKey = toDateKey(new Date());
+    const isToday = dateKey === todayKey;
+
+    const dateStr = targetDate.toLocaleDateString("en-US", {
       weekday: "long",
       year: "numeric",
       month: "long",
       day: "numeric",
     });
 
-    // Fetch todos, events, and preferences in parallel
+    // Fetch todos, events for target date, and preferences in parallel
     const [todos, calEvents, prefs] = await Promise.all([
       prisma.todo.findMany({
         where: { userId, completed: false },
         orderBy: [{ priority: "desc" }, { dueDate: "asc" }],
       }),
-      fetchCalendarEvents(userId),
+      fetchCalendarEventsForDate(userId, targetDate),
       prisma.schedulePreferences.findUnique({ where: { userId } }),
     ]);
 
@@ -579,7 +655,7 @@ Return a JSON array of agenda items sorted by time:
 
 Return ONLY the JSON array, no markdown fences, no explanatory text.`;
 
-    const prompt = `Today is ${dateStr}.\n\nCalendar Events (FIXED — do not move):\n${eventsList}\n\nTasks (flexible — fit into gaps):\n${todoList}\n${prefsBlock}\nCreate my optimized daily agenda as a JSON array.`;
+    const prompt = `${isToday ? "Today" : "The schedule date"} is ${dateStr}.\n\nCalendar Events (FIXED — do not move):\n${eventsList}\n\nTasks (flexible — fit into gaps):\n${todoList}\n${prefsBlock}\nCreate my optimized daily agenda as a JSON array.`;
 
     // Try automationExec first (cheap AI lane), fall back to gateway
     let result: string;
@@ -611,14 +687,35 @@ Return ONLY the JSON array, no markdown fences, no explanatory text.`;
       agenda = null;
     }
 
+    // Persist to database
+    await prisma.savedAgenda.upsert({
+      where: { userId_date: { userId, date: dateKey } },
+      update: {
+        items: agenda ? JSON.stringify(agenda) : "[]",
+        raw: agenda ? null : result,
+        eventCount: calEvents.length,
+        taskCount: todos.length,
+      },
+      create: {
+        userId,
+        date: dateKey,
+        items: agenda ? JSON.stringify(agenda) : "[]",
+        raw: agenda ? null : result,
+        eventCount: calEvents.length,
+        taskCount: todos.length,
+      },
+    });
+
     res.json({
       ok: true,
       data: {
         agenda,
         raw: agenda ? undefined : result,
         date: dateStr,
+        dateKey,
         eventCount: calEvents.length,
         taskCount: todos.length,
+        savedAt: new Date().toISOString(),
       },
     });
   } catch (err: any) {
