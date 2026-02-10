@@ -300,18 +300,23 @@ export class OpenClawGateway extends EventEmitter {
 
   private startTick(): void {
     this.stopTick();
-    this.tickTimer = setInterval(async () => {
+    const tick = async () => {
       try {
         await this.send("health", {}, 10000);
       } catch {
         // Tick failure is not critical — disconnect handler will manage
       }
-    }, this.tickIntervalMs);
+      // Schedule next tick only after this one finishes (prevents accumulation)
+      if (this.connected) {
+        this.tickTimer = setTimeout(tick, this.tickIntervalMs);
+      }
+    };
+    this.tickTimer = setTimeout(tick, this.tickIntervalMs);
   }
 
   private stopTick(): void {
     if (this.tickTimer) {
-      clearInterval(this.tickTimer);
+      clearTimeout(this.tickTimer);
       this.tickTimer = null;
     }
   }

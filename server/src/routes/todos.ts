@@ -13,10 +13,50 @@ router.get("/", async (req: AuthRequest, res: Response) => {
     const userId = req.user!.userId;
     const completed = req.query.completed === "true" ? true : req.query.completed === "false" ? false : undefined;
 
+    const period = req.query.period as string | undefined;
+
+    let dateFilter: any = {};
+    if (period === "today") {
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      const tomorrow = new Date(todayStart);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      // Include tasks due today OR tasks with no due date (unscheduled = do today)
+      dateFilter = {
+        OR: [
+          { dueDate: { gte: todayStart, lt: tomorrow } },
+          { dueDate: null },
+        ],
+      };
+    } else if (period === "week") {
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      const weekEnd = new Date(todayStart);
+      weekEnd.setDate(weekEnd.getDate() + 7);
+      dateFilter = {
+        OR: [
+          { dueDate: { gte: todayStart, lt: weekEnd } },
+          { dueDate: null },
+        ],
+      };
+    } else if (period === "month") {
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      const monthEnd = new Date(todayStart);
+      monthEnd.setMonth(monthEnd.getMonth() + 1);
+      dateFilter = {
+        OR: [
+          { dueDate: { gte: todayStart, lt: monthEnd } },
+          { dueDate: null },
+        ],
+      };
+    }
+
     const todos = await prisma.todo.findMany({
       where: {
         userId,
         ...(completed !== undefined ? { completed } : {}),
+        ...dateFilter,
       },
       orderBy: [{ completed: "asc" }, { priority: "desc" }, { createdAt: "desc" }],
     });
@@ -31,7 +71,7 @@ router.get("/", async (req: AuthRequest, res: Response) => {
 router.post("/", async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.userId;
-    const { title, description, priority, dueDate } = req.body;
+    const { title, description, priority, dueDate, estimatedMinutes } = req.body;
 
     if (!title) {
       res.status(400).json({ ok: false, error: "title is required" });
@@ -45,6 +85,7 @@ router.post("/", async (req: AuthRequest, res: Response) => {
         description: description || null,
         priority: priority || "medium",
         dueDate: dueDate ? new Date(dueDate) : null,
+        estimatedMinutes: estimatedMinutes ? parseInt(estimatedMinutes, 10) : null,
       },
     });
 
@@ -59,7 +100,7 @@ router.patch("/:id", async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.userId;
     const id = String(req.params.id);
-    const { title, description, priority, dueDate, completed } = req.body;
+    const { title, description, priority, dueDate, completed, estimatedMinutes } = req.body;
 
     // Verify ownership
     const existing = await prisma.todo.findFirst({ where: { id, userId } });
@@ -76,6 +117,7 @@ router.patch("/:id", async (req: AuthRequest, res: Response) => {
         ...(priority !== undefined ? { priority } : {}),
         ...(dueDate !== undefined ? { dueDate: dueDate ? new Date(dueDate) : null } : {}),
         ...(completed !== undefined ? { completed } : {}),
+        ...(estimatedMinutes !== undefined ? { estimatedMinutes: estimatedMinutes ? parseInt(estimatedMinutes, 10) : null } : {}),
       },
     });
 

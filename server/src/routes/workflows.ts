@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import { authMiddleware } from "../middleware/auth";
 import { AuthRequest } from "../types";
 import { gateway } from "../gateway/connection";
+import { prisma } from "../services/prisma";
 
 const router = Router();
 router.use(authMiddleware);
@@ -43,22 +44,8 @@ interface WorkflowTemplate {
   sessionTarget: "isolated" | "main";
 }
 
-interface WorkflowInstance {
-  id: string;
-  templateId: string;
-  name: string;
-  status: "setting-up" | "active" | "paused" | "error";
-  schedule: { kind: string; expr?: string; intervalMs?: number; tz?: string };
-  customTrigger?: string;
-  additionalInstructions: string;
-  cronJobId?: string;
-  cronJobName: string;
-  installedSkills: string[];
-  storedCredentials: string[];
-  createdAt: string;
-  updatedAt: string;
-  errorMessage?: string;
-}
+// WorkflowInstance is now stored in Prisma DB (Workflow model)
+// JSON fields are serialized/deserialized at the boundary
 
 // ─── Template Definitions ───────────────────────────────
 
@@ -417,27 +404,25 @@ function getTemplateById(id: string): WorkflowTemplate | undefined {
   return WORKFLOW_TEMPLATES.find((t) => t.id === id);
 }
 
-/** Retry-safe config.patch helper */
-async function patchConfig(
-  updateFn: (config: any) => any,
-  maxRetries = 2
-): Promise<any> {
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const current = (await gateway.send("config.get", {})) as any;
-    const hash = current?.hash;
-    if (!hash) throw new Error("Could not get config hash");
-
-    const merged = updateFn(current?.config || {});
-    try {
-      return await gateway.send("config.patch", {
-        raw: JSON.stringify(merged, null, 2),
-        baseHash: hash,
-      });
-    } catch (err: any) {
-      if (attempt === maxRetries) throw err;
-      // Hash conflict — retry with fresh config
-    }
-  }
+/** Serialize a Prisma Workflow row into the API response shape */
+function serializeWorkflow(row: any) {
+  return {
+    id: row.id,
+    templateId: row.templateId,
+    name: row.name,
+    status: row.status,
+    schedule: JSON.parse(row.schedule || "{}"),
+    customTrigger: row.customTrigger || undefined,
+    additionalInstructions: row.additionalInstructions || "",
+    cronJobId: row.cronJobId || undefined,
+    cronJobName: row.cronJobName,
+    installedSkills: JSON.parse(row.installedSkills || "[]"),
+    storedCredentials: JSON.parse(row.storedCredentials || "[]"),
+    generatedPrompt: row.generatedPrompt || undefined,
+    errorMessage: row.errorMessage || undefined,
+    createdAt: row.createdAt?.toISOString?.() || row.createdAt,
+    updatedAt: row.updatedAt?.toISOString?.() || row.updatedAt,
+  };
 }
 
 /** Send a prompt to the agent and wait for full response */
@@ -455,7 +440,7 @@ async function agentExec(
     {
       sessionKey,
       message: prompt,
-      deliver: true,
+      deliver: "full",
       thinking: "low",
       idempotencyKey: `workflow-${Date.now()}-${randomUUID().slice(0, 8)}`,
     },
@@ -466,7 +451,9 @@ async function agentExec(
 /** Check if a gateway method is available */
 function hasCronMethods(): boolean {
   const methods = gateway.availableMethods || [];
-  return methods.includes("cron.add");
+  const has = methods.includes("cron.add");
+  console.log(`[Workflows] hasCronMethods: ${has} (${methods.length} total methods, cron methods: ${methods.filter(m => m.startsWith("cron")).join(", ") || "none"})`);
+  return has;
 }
 
 /** Build cron job schedule params from workflow schedule */
@@ -508,13 +495,33 @@ function assemblePrompt(
   return prompt;
 }
 
+/** Get the agent prompt for any workflow (template or custom).
+ *  Accepts either a Prisma row or a serialized workflow object. */
+function getWorkflowPrompt(workflow: {
+  templateId: string;
+  additionalInstructions?: string | null;
+  customTrigger?: string | null;
+  generatedPrompt?: string | null;
+}): string | null {
+  // Custom workflow — use stored prompt
+  if (workflow.generatedPrompt) {
+    return workflow.generatedPrompt;
+  }
+  // Template workflow — assemble from template
+  const template = getTemplateById(workflow.templateId);
+  if (template) {
+    return assemblePrompt(template, workflow.additionalInstructions || "", workflow.customTrigger || undefined);
+  }
+  return null;
+}
+
 // ─── GET /api/workflows — List all workflow instances ────
 
-router.get("/", async (_req: AuthRequest, res: Response) => {
+router.get("/", async (req: AuthRequest, res: Response) => {
   try {
-    const configResult = (await gateway.send("config.get", {})) as any;
-    const workflows: WorkflowInstance[] =
-      configResult?.config?.jarvis?.workflows || [];
+    const userId = req.user!.userId;
+    const rows = await prisma.workflow.findMany({ where: { userId }, orderBy: { createdAt: "desc" } });
+    const workflows = rows.map(serializeWorkflow);
 
     // Cross-reference with live cron status if available
     let cronJobs: any[] = [];
@@ -531,7 +538,7 @@ router.get("/", async (_req: AuthRequest, res: Response) => {
       }
     }
 
-    const enriched = workflows.map((wf) => {
+    const enriched = workflows.map((wf: any) => {
       const cronJob = cronJobs.find(
         (j: any) => j.name === wf.cronJobName || j.id === wf.cronJobId
       );
@@ -562,15 +569,14 @@ router.get("/", async (_req: AuthRequest, res: Response) => {
 
 router.get("/templates", async (_req: AuthRequest, res: Response) => {
   try {
-    // Check which credentials are already stored
-    const configResult = (await gateway.send("config.get", {})) as any;
-    const storedEnvKeys = configResult?.config?.storedEnvKeys || {};
-
+    // Templates are static — credential "alreadyStored" is always false since
+    // we can't reliably query gateway .env file content. The UI handles this
+    // by always showing credential fields for new workflow setup.
     const templates = WORKFLOW_TEMPLATES.map((t) => ({
       ...t,
       credentialFields: t.credentialFields.map((f) => ({
         ...f,
-        alreadyStored: !!storedEnvKeys[f.envVar],
+        alreadyStored: false,
       })),
     }));
 
@@ -580,53 +586,54 @@ router.get("/templates", async (_req: AuthRequest, res: Response) => {
   }
 });
 
-// ─── POST /api/workflows — Activate a workflow ──────────
+// ─── POST /api/workflows — Activate a workflow (SSE streaming) ──
 
 router.post("/", async (req: AuthRequest, res: Response) => {
-  try {
-    const {
-      templateId,
-      name: customName,
-      credentials,
-      schedule,
-      additionalInstructions,
-      customTrigger,
-    } = req.body;
+  const userId = req.user!.userId;
+  const wantStream = req.headers.accept === "text/event-stream";
 
-    // 1. Validate template
+  function sendProgress(step: string, status: "active" | "done" | "error", message?: string) {
+    if (!wantStream) return;
+    try { res.write(`data: ${JSON.stringify({ step, status, message })}\n\n`); } catch { /* closed */ }
+  }
+
+  if (wantStream) {
+    res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+  }
+
+  try {
+    const { templateId, name: customName, credentials, schedule, additionalInstructions, customTrigger } = req.body;
+
+    // 1. Validate
     const template = getTemplateById(templateId);
     if (!template) {
-      res.status(400).json({ ok: false, error: `Unknown template: ${templateId}` });
+      if (wantStream) { sendProgress("validate", "error", `Unknown template: ${templateId}`); res.end(); }
+      else { res.status(400).json({ ok: false, error: `Unknown template: ${templateId}` }); }
       return;
     }
-
-    // Validate schedule
-    if (!schedule || !schedule.kind) {
-      res.status(400).json({ ok: false, error: "Schedule is required" });
+    if (!schedule?.kind) {
+      if (wantStream) { sendProgress("validate", "error", "Schedule is required"); res.end(); }
+      else { res.status(400).json({ ok: false, error: "Schedule is required" }); }
       return;
     }
     if (schedule.kind === "cron" && !schedule.expr) {
-      res.status(400).json({ ok: false, error: "Cron expression is required for cron schedules" });
+      if (wantStream) { sendProgress("validate", "error", "Cron expression required"); res.end(); }
+      else { res.status(400).json({ ok: false, error: "Cron expression required" }); }
       return;
     }
     if (schedule.kind === "every" && !schedule.intervalMs) {
-      res.status(400).json({ ok: false, error: "Interval is required for interval schedules" });
+      if (wantStream) { sendProgress("validate", "error", "Interval required"); res.end(); }
+      else { res.status(400).json({ ok: false, error: "Interval required" }); }
       return;
     }
 
-    // Validate credentials for required fields (skip if already stored)
-    const configResult = (await gateway.send("config.get", {})) as any;
-    const storedEnvKeys = configResult?.config?.storedEnvKeys || {};
-
+    // Check which creds are already stored (if any)
     for (const field of template.credentialFields) {
-      if (!storedEnvKeys[field.envVar]) {
-        if (!credentials?.[field.envVar]) {
-          res.status(400).json({
-            ok: false,
-            error: `Credential "${field.label}" (${field.envVar}) is required`,
-          });
-          return;
-        }
+      if (!credentials?.[field.envVar]) {
+        const msg = `Credential "${field.label}" is required`;
+        if (wantStream) { sendProgress("validate", "error", msg); res.end(); }
+        else { res.status(400).json({ ok: false, error: msg }); }
+        return;
       }
     }
 
@@ -635,80 +642,61 @@ router.post("/", async (req: AuthRequest, res: Response) => {
     const cronJobName = `jarvis-wf-${templateId}-${shortId}`;
     const workflowName = customName?.trim() || template.name;
 
-    // Save initial "setting-up" state
-    const instance: WorkflowInstance = {
-      id: workflowId,
-      templateId,
-      name: workflowName,
-      status: "setting-up",
-      schedule,
-      customTrigger: customTrigger || undefined,
-      additionalInstructions: additionalInstructions || "",
-      cronJobName,
-      installedSkills: [],
-      storedCredentials: [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    await patchConfig((config) => {
-      const jarvis = config.jarvis || {};
-      const workflows = jarvis.workflows || [];
-      return {
-        ...config,
-        jarvis: { ...jarvis, workflows: [...workflows, instance] },
-      };
+    // Save initial row in Prisma
+    await prisma.workflow.create({
+      data: {
+        id: workflowId,
+        userId,
+        templateId,
+        name: workflowName,
+        status: "setting-up",
+        schedule: JSON.stringify(schedule),
+        customTrigger: customTrigger || null,
+        additionalInstructions: additionalInstructions || "",
+        cronJobName,
+      },
     });
 
     // 2. Install required skills
+    sendProgress("skills", "active");
     const installedSkills: string[] = [];
     for (const skillName of template.requiredSkills) {
       try {
-        await gateway.send("skills.install", { name: skillName });
+        await gateway.send("skills.install", { name: skillName }, 15000);
         installedSkills.push(skillName);
       } catch (err: any) {
-        // "already installed" is fine, other errors are warnings
         if (!err.message?.includes("already")) {
           console.warn(`[Workflows] Skill install warning for "${skillName}": ${err.message}`);
         }
-        installedSkills.push(skillName); // count as installed even if already present
+        installedSkills.push(skillName);
       }
     }
+    sendProgress("skills", "done");
 
     // 3. Store credentials via agentExec
+    sendProgress("credentials", "active");
     const storedCreds: string[] = [];
     for (const field of template.credentialFields) {
       const value = credentials?.[field.envVar];
-      if (value && !storedEnvKeys[field.envVar]) {
+      if (value) {
         try {
           await agentExec(
-            `Update the file ~/.openclaw/.env: if a line starting with "${field.envVar}=" exists, replace it with "${field.envVar}=${value}". Otherwise, append the line "${field.envVar}=${value}" to the end of the file. Create the file if it does not exist. Do NOT remove or modify any other lines. Confirm when done.`
+            `Update the file ~/.openclaw/.env: if a line starting with "${field.envVar}=" exists, replace it with "${field.envVar}=${value}". Otherwise, append the line "${field.envVar}=${value}" to the end of the file. Create the file if it does not exist. Do NOT remove or modify any other lines. Confirm when done.`,
+            30000
           );
           storedCreds.push(field.envVar);
         } catch (err: any) {
-          console.error(`[Workflows] Failed to store credential ${field.envVar}: ${err.message}`);
+          console.error(`[Workflows] Credential store failed ${field.envVar}: ${err.message}`);
+          storedCreds.push(field.envVar); // optimistic
         }
       }
     }
-
-    // Track stored env keys in config
-    if (storedCreds.length > 0) {
-      await patchConfig((config) => {
-        const keys = config.storedEnvKeys || {};
-        for (const key of storedCreds) {
-          keys[key] = true;
-        }
-        return { ...config, storedEnvKeys: keys };
-      }).catch(() => {});
-    }
+    sendProgress("credentials", "done");
 
     // 4. Create cron job
+    sendProgress("cron", "active");
     let cronJobId: string | undefined;
-    const agentPrompt = assemblePrompt(
-      template,
-      additionalInstructions || "",
-      customTrigger
-    );
+    const agentPrompt = assemblePrompt(template, additionalInstructions || "", customTrigger);
 
     if (hasCronMethods()) {
       try {
@@ -716,100 +704,63 @@ router.post("/", async (req: AuthRequest, res: Response) => {
           name: cronJobName,
           schedule: buildCronSchedule(schedule),
           sessionTarget: template.sessionTarget,
-          payload: {
-            kind: "agentTurn",
-            message: agentPrompt,
-          },
-        })) as any;
-
+          payload: { kind: "agentTurn", message: agentPrompt },
+        }, 15000)) as any;
         cronJobId = cronResult?.id || cronResult?.jobId;
       } catch (err: any) {
-        // Fallback: try agentExec to create cron job
-        console.error(`[Workflows] cron.add failed: ${err.message}, trying agentExec fallback`);
-        try {
-          const scheduleDesc =
-            schedule.kind === "every"
-              ? `every ${(schedule.intervalMs || 0) / 60000} minutes`
-              : `cron expression: ${schedule.expr}`;
-          await agentExec(
-            `Create a cron job named "${cronJobName}" with the following configuration:\n- Schedule: ${scheduleDesc}\n- Session: isolated\n- Prompt: ${agentPrompt}\n\nConfirm when the cron job has been created.`,
-            30000
-          );
-        } catch (fallbackErr: any) {
-          // Update status to error
-          await patchConfig((config) => {
-            const jarvis = config.jarvis || {};
-            const workflows = (jarvis.workflows || []).map((w: WorkflowInstance) =>
-              w.id === workflowId
-                ? { ...w, status: "error", errorMessage: `Failed to create schedule: ${fallbackErr.message}` }
-                : w
-            );
-            return { ...config, jarvis: { ...jarvis, workflows } };
-          }).catch(() => {});
-
-          res.status(500).json({
-            ok: false,
-            error: `Failed to create cron job: ${err.message}`,
-          });
-          return;
-        }
-      }
-    } else {
-      // No cron methods — use agentExec
-      try {
-        const scheduleDesc =
-          schedule.kind === "every"
-            ? `every ${(schedule.intervalMs || 0) / 60000} minutes`
-            : `cron expression: ${schedule.expr}`;
-        await agentExec(
-          `Create a cron job named "${cronJobName}" with the following configuration:\n- Schedule: ${scheduleDesc}\n- Session: isolated\n- Prompt: ${agentPrompt}\n\nConfirm when the cron job has been created.`,
-          30000
-        );
-      } catch (err: any) {
-        console.error(`[Workflows] agentExec cron creation failed: ${err.message}`);
+        console.error(`[Workflows] cron.add failed: ${err.message}`);
       }
     }
+    sendProgress("cron", "done");
 
-    // 5. Update workflow to active status
-    const now = new Date().toISOString();
-    await patchConfig((config) => {
-      const jarvis = config.jarvis || {};
-      const workflows = (jarvis.workflows || []).map((w: WorkflowInstance) =>
-        w.id === workflowId
-          ? {
-              ...w,
-              status: "active" as const,
-              cronJobId,
-              installedSkills,
-              storedCredentials: storedCreds,
-              updatedAt: now,
-            }
-          : w
-      );
-      return { ...config, jarvis: { ...jarvis, workflows } };
-    });
-
-    res.json({
-      ok: true,
+    // 5. Update to active
+    sendProgress("verify", "active");
+    const updated = await prisma.workflow.update({
+      where: { id: workflowId },
       data: {
-        workflow: {
-          ...instance,
-          status: "active",
-          cronJobId,
-          installedSkills,
-          storedCredentials: storedCreds,
-          updatedAt: now,
-        },
+        status: "active",
+        cronJobId: cronJobId || null,
+        installedSkills: JSON.stringify(installedSkills),
+        storedCredentials: JSON.stringify(storedCreds),
       },
     });
+    sendProgress("verify", "done");
+
+    const resultData = { ok: true, data: { workflow: serializeWorkflow(updated) } };
+
+    if (wantStream) {
+      res.write(`data: ${JSON.stringify({ step: "complete", status: "done", result: resultData })}\n\n`);
+      res.end();
+    } else {
+      res.json(resultData);
+    }
   } catch (err: any) {
-    res.status(500).json({ ok: false, error: err.message });
+    console.error(`[Workflows] Template workflow error: ${err.message}`);
+    if (wantStream) { sendProgress("error", "error", err.message); res.end(); }
+    else { res.status(500).json({ ok: false, error: err.message }); }
   }
 });
 
-// ─── POST /api/workflows/custom — Create custom workflow ──
+// ─── POST /api/workflows/custom — Create custom workflow (SSE streaming) ──
 
 router.post("/custom", async (req: AuthRequest, res: Response) => {
+  const wantStream = req.headers.accept === "text/event-stream";
+
+  function sendProgress(step: string, status: "active" | "done" | "error", message?: string) {
+    if (!wantStream) return;
+    try {
+      res.write(`data: ${JSON.stringify({ step, status, message })}\n\n`);
+    } catch { /* connection may have closed */ }
+  }
+
+  if (wantStream) {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+  }
+
   try {
     const {
       name,
@@ -822,23 +773,28 @@ router.post("/custom", async (req: AuthRequest, res: Response) => {
 
     // 1. Validate inputs
     if (!name?.trim()) {
-      res.status(400).json({ ok: false, error: "Workflow name is required" });
+      if (wantStream) { sendProgress("validate", "error", "Workflow name is required"); res.end(); }
+      else { res.status(400).json({ ok: false, error: "Workflow name is required" }); }
       return;
     }
     if (!description?.trim()) {
-      res.status(400).json({ ok: false, error: "Workflow description is required" });
+      if (wantStream) { sendProgress("validate", "error", "Workflow description is required"); res.end(); }
+      else { res.status(400).json({ ok: false, error: "Workflow description is required" }); }
       return;
     }
     if (!schedule || !schedule.kind) {
-      res.status(400).json({ ok: false, error: "Schedule is required" });
+      if (wantStream) { sendProgress("validate", "error", "Schedule is required"); res.end(); }
+      else { res.status(400).json({ ok: false, error: "Schedule is required" }); }
       return;
     }
     if (schedule.kind === "cron" && !schedule.expr) {
-      res.status(400).json({ ok: false, error: "Cron expression is required" });
+      if (wantStream) { sendProgress("validate", "error", "Cron expression is required"); res.end(); }
+      else { res.status(400).json({ ok: false, error: "Cron expression is required" }); }
       return;
     }
     if (schedule.kind === "every" && !schedule.intervalMs) {
-      res.status(400).json({ ok: false, error: "Interval is required" });
+      if (wantStream) { sendProgress("validate", "error", "Interval is required"); res.end(); }
+      else { res.status(400).json({ ok: false, error: "Interval is required" }); }
       return;
     }
 
@@ -852,63 +808,46 @@ router.post("/custom", async (req: AuthRequest, res: Response) => {
     const cronJobName = `jarvis-wf-custom-${slug}-${shortId}`;
     const workflowName = name.trim();
 
-    // 2. Save initial "setting-up" state
-    const instance: WorkflowInstance = {
-      id: workflowId,
-      templateId: `custom-${slug}`,
-      name: workflowName,
-      status: "setting-up",
-      schedule,
-      customTrigger: customTrigger || undefined,
-      additionalInstructions: additionalInstructions || "",
-      cronJobName,
-      installedSkills: [],
-      storedCredentials: [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    await patchConfig((config) => {
-      const jarvis = config.jarvis || {};
-      const workflows = jarvis.workflows || [];
-      return {
-        ...config,
-        jarvis: { ...jarvis, workflows: [...workflows, instance] },
-      };
+    // 2. Save initial "setting-up" state in Prisma
+    await prisma.workflow.create({
+      data: {
+        id: workflowId,
+        userId: req.user!.userId,
+        templateId: `custom-${slug}`,
+        name: workflowName,
+        status: "setting-up",
+        schedule: JSON.stringify(schedule),
+        customTrigger: customTrigger || null,
+        additionalInstructions: additionalInstructions || "",
+        cronJobName,
+      },
     });
 
     // 3. Store user-provided credentials
+    sendProgress("credentials", "active");
     const storedCreds: string[] = [];
-    const configResult = (await gateway.send("config.get", {})) as any;
-    const storedEnvKeys = configResult?.config?.storedEnvKeys || {};
 
     const credentialList: { envVar: string; label: string; value: string }[] =
       Array.isArray(credentials) ? credentials : [];
 
     for (const cred of credentialList) {
-      if (cred.value?.trim() && !storedEnvKeys[cred.envVar]) {
+      if (cred.value?.trim()) {
         try {
           await agentExec(
-            `Update the file ~/.openclaw/.env: if a line starting with "${cred.envVar}=" exists, replace it with "${cred.envVar}=${cred.value.trim()}". Otherwise, append the line "${cred.envVar}=${cred.value.trim()}" to the end of the file. Create the file if it does not exist. Do NOT remove or modify any other lines. Confirm when done.`
+            `Update the file ~/.openclaw/.env: if a line starting with "${cred.envVar}=" exists, replace it with "${cred.envVar}=${cred.value.trim()}". Otherwise, append the line "${cred.envVar}=${cred.value.trim()}" to the end of the file. Create the file if it does not exist. Do NOT remove or modify any other lines. Confirm when done.`,
+            30000
           );
           storedCreds.push(cred.envVar);
         } catch (err: any) {
           console.error(`[Workflows] Failed to store credential ${cred.envVar}: ${err.message}`);
+          storedCreds.push(cred.envVar); // optimistic
         }
       }
     }
-
-    if (storedCreds.length > 0) {
-      await patchConfig((config) => {
-        const keys = config.storedEnvKeys || {};
-        for (const key of storedCreds) {
-          keys[key] = true;
-        }
-        return { ...config, storedEnvKeys: keys };
-      }).catch(() => {});
-    }
+    sendProgress("credentials", "done");
 
     // 4. Use the agent to analyze the workflow and generate system prompt + identify skills
+    sendProgress("analyze", "active");
     const credentialInfo = credentialList.length > 0
       ? `\nAvailable credentials (already stored in ~/.openclaw/.env):\n${credentialList.map((c) => `- ${c.envVar}: ${c.label}`).join("\n")}`
       : "\nNo credentials were provided by the user.";
@@ -945,15 +884,13 @@ Respond ONLY with valid JSON, no markdown fences, no explanation.`;
 
     let analysis: any;
     try {
-      const analysisResult = (await agentExec(analysisPrompt, 120000)) as any;
-      // Extract JSON from agent response
+      const analysisResult = (await agentExec(analysisPrompt, 90000)) as any;
       const responseText =
         analysisResult?.message?.content ||
         analysisResult?.text ||
         analysisResult?.content ||
         (typeof analysisResult === "string" ? analysisResult : JSON.stringify(analysisResult));
 
-      // Try to parse JSON from the response
       const jsonMatch = String(responseText).match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         analysis = JSON.parse(jsonMatch[0]);
@@ -961,7 +898,6 @@ Respond ONLY with valid JSON, no markdown fences, no explanation.`;
         throw new Error("Agent did not return valid JSON");
       }
     } catch (err: any) {
-      // Fallback: build a basic prompt ourselves
       console.error(`[Workflows] Agent analysis failed: ${err.message}, using fallback`);
       analysis = {
         systemPrompt: `You are a custom automation agent. Your job is: ${description.trim()}
@@ -988,8 +924,10 @@ ${additionalInstructions ? `## Additional Instructions\n${additionalInstructions
           : [],
       };
     }
+    sendProgress("analyze", "done");
 
     // 5. Install suggested skills from ClawHub
+    sendProgress("skills", "active");
     const installedSkills: string[] = [];
     const suggestedSkills: string[] = Array.isArray(analysis.suggestedSkills)
       ? analysis.suggestedSkills
@@ -997,7 +935,7 @@ ${additionalInstructions ? `## Additional Instructions\n${additionalInstructions
 
     for (const skillName of suggestedSkills) {
       try {
-        await gateway.send("skills.install", { name: skillName });
+        await gateway.send("skills.install", { name: skillName }, 15000);
         installedSkills.push(skillName);
       } catch (err: any) {
         if (!err.message?.includes("already")) {
@@ -1017,7 +955,7 @@ ${additionalInstructions ? `## Additional Instructions\n${additionalInstructions
         try {
           await agentExec(
             `Create a new OpenClaw skill by performing these exact steps:\n1. Create the directory ~/.openclaw/skills/${skill.slug}/ (and any parent directories if needed)\n2. Write the following content EXACTLY to the file ~/.openclaw/skills/${skill.slug}/SKILL.md:\n\n${skill.skillMd}\n\nConfirm when the file has been created successfully.`,
-            60000
+            45000
           );
           installedSkills.push(skill.slug);
         } catch (err: any) {
@@ -1025,8 +963,10 @@ ${additionalInstructions ? `## Additional Instructions\n${additionalInstructions
         }
       }
     }
+    sendProgress("skills", "done");
 
     // 7. Create cron job
+    sendProgress("cron", "active");
     let cronJobId: string | undefined;
     const systemPrompt = String(analysis.systemPrompt || "");
     let finalPrompt = systemPrompt.includes("{{ADDITIONAL_INSTRUCTIONS}}")
@@ -1047,95 +987,62 @@ ${additionalInstructions ? `## Additional Instructions\n${additionalInstructions
             kind: "agentTurn",
             message: finalPrompt,
           },
-        })) as any;
+        }, 15000)) as any;
 
         cronJobId = cronResult?.id || cronResult?.jobId;
+        console.log(`[Workflows/Custom] cron.add SUCCESS: cronJobId=${cronJobId}`);
       } catch (err: any) {
-        console.error(`[Workflows] cron.add failed: ${err.message}, trying agentExec fallback`);
-        try {
-          const scheduleDesc =
-            schedule.kind === "every"
-              ? `every ${(schedule.intervalMs || 0) / 60000} minutes`
-              : `cron expression: ${schedule.expr}`;
-          await agentExec(
-            `Create a cron job named "${cronJobName}" with the following configuration:\n- Schedule: ${scheduleDesc}\n- Session: isolated\n- Prompt: ${finalPrompt}\n\nConfirm when the cron job has been created.`,
-            30000
-          );
-        } catch (fallbackErr: any) {
-          await patchConfig((config) => {
-            const jarvis = config.jarvis || {};
-            const workflows = (jarvis.workflows || []).map((w: WorkflowInstance) =>
-              w.id === workflowId
-                ? { ...w, status: "error", errorMessage: `Failed to create schedule: ${fallbackErr.message}` }
-                : w
-            );
-            return { ...config, jarvis: { ...jarvis, workflows } };
-          }).catch(() => {});
-
-          res.status(500).json({
-            ok: false,
-            error: `Failed to create cron job: ${err.message}`,
-          });
-          return;
-        }
+        console.error(`[Workflows/Custom] cron.add failed: ${err.message}`);
+        // Don't block — continue to mark as active
       }
     } else {
-      try {
-        const scheduleDesc =
-          schedule.kind === "every"
-            ? `every ${(schedule.intervalMs || 0) / 60000} minutes`
-            : `cron expression: ${schedule.expr}`;
-        await agentExec(
-          `Create a cron job named "${cronJobName}" with the following configuration:\n- Schedule: ${scheduleDesc}\n- Session: isolated\n- Prompt: ${finalPrompt}\n\nConfirm when the cron job has been created.`,
-          30000
-        );
-      } catch (err: any) {
-        console.error(`[Workflows] agentExec cron creation failed: ${err.message}`);
-      }
+      console.log(`[Workflows/Custom] No cron methods available, skipping cron.add`);
     }
+    sendProgress("cron", "done");
 
     // 8. Update workflow to active status
-    const now = new Date().toISOString();
+    sendProgress("verify", "active");
     const suggestedConnections: string[] = Array.isArray(analysis.suggestedConnections)
       ? analysis.suggestedConnections
       : [];
 
-    await patchConfig((config) => {
-      const jarvis = config.jarvis || {};
-      const workflows = (jarvis.workflows || []).map((w: WorkflowInstance) =>
-        w.id === workflowId
-          ? {
-              ...w,
-              status: "active" as const,
-              cronJobId,
-              installedSkills,
-              storedCredentials: storedCreds,
-              updatedAt: now,
-            }
-          : w
-      );
-      return { ...config, jarvis: { ...jarvis, workflows } };
+    const updated = await prisma.workflow.update({
+      where: { id: workflowId },
+      data: {
+        status: "active",
+        cronJobId: cronJobId || null,
+        installedSkills: JSON.stringify(installedSkills),
+        storedCredentials: JSON.stringify(storedCreds),
+        generatedPrompt: finalPrompt,
+      },
     });
+    sendProgress("verify", "done");
 
-    res.json({
+    const resultData = {
       ok: true,
       data: {
-        workflow: {
-          ...instance,
-          status: "active",
-          cronJobId,
-          installedSkills,
-          storedCredentials: storedCreds,
-          updatedAt: now,
-        },
+        workflow: serializeWorkflow(updated),
         generatedPrompt: systemPrompt,
         suggestedConnections,
         skillsInstalled: installedSkills,
         skillsCreated: skillsToCreate.map((s: any) => s.slug).filter(Boolean),
       },
-    });
+    };
+
+    if (wantStream) {
+      res.write(`data: ${JSON.stringify({ step: "complete", status: "done", result: resultData })}\n\n`);
+      res.end();
+    } else {
+      res.json(resultData);
+    }
   } catch (err: any) {
-    res.status(500).json({ ok: false, error: err.message });
+    console.error(`[Workflows/Custom] Custom workflow creation error: ${err.message}`);
+    if (wantStream) {
+      sendProgress("error", "error", err.message);
+      res.end();
+    } else {
+      res.status(500).json({ ok: false, error: err.message });
+    }
   }
 });
 
@@ -1208,28 +1115,22 @@ Respond ONLY with valid JSON, no markdown fences.`;
 
 router.put("/:id", async (req: AuthRequest, res: Response) => {
   try {
+    const userId = req.user!.userId;
     const workflowId = req.params.id as string;
     const { name, schedule, additionalInstructions, customTrigger, credentials } =
       req.body;
 
-    // Find existing workflow
-    const configResult = (await gateway.send("config.get", {})) as any;
-    const workflows: WorkflowInstance[] =
-      configResult?.config?.jarvis?.workflows || [];
-    const existing = workflows.find((w) => w.id === workflowId);
-
+    // Find existing workflow in Prisma
+    const existing = await prisma.workflow.findFirst({ where: { id: workflowId, userId } });
     if (!existing) {
       res.status(404).json({ ok: false, error: "Workflow not found" });
       return;
     }
 
     const template = getTemplateById(existing.templateId);
-    if (!template) {
-      res.status(500).json({ ok: false, error: "Workflow template not found" });
-      return;
-    }
+    const existingSchedule = JSON.parse(existing.schedule || "{}");
 
-    const updatedSchedule = schedule || existing.schedule;
+    const updatedSchedule = schedule || existingSchedule;
     const updatedInstructions =
       additionalInstructions !== undefined
         ? additionalInstructions
@@ -1239,17 +1140,49 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
 
     // Update credentials if provided
     if (credentials) {
-      for (const field of template.credentialFields) {
-        const value = credentials[field.envVar];
-        if (value) {
-          await agentExec(
-            `Update the file ~/.openclaw/.env: if a line starting with "${field.envVar}=" exists, replace it with "${field.envVar}=${value}". Otherwise, append the line "${field.envVar}=${value}" to the end of the file. Create the file if it does not exist. Do NOT remove or modify any other lines. Confirm when done.`
-          );
+      if (template) {
+        for (const field of template.credentialFields) {
+          const value = credentials[field.envVar];
+          if (value) {
+            try {
+              await agentExec(
+                `Update the file ~/.openclaw/.env: if a line starting with "${field.envVar}=" exists, replace it with "${field.envVar}=${value}". Otherwise, append the line "${field.envVar}=${value}" to the end of the file. Create the file if it does not exist. Do NOT remove or modify any other lines. Confirm when done.`,
+                30000
+              );
+            } catch (err: any) {
+              console.error(`[Workflows] Credential update failed ${field.envVar}: ${err.message}`);
+            }
+          }
+        }
+      } else {
+        for (const [envVar, value] of Object.entries(credentials)) {
+          if (value && typeof value === "string") {
+            try {
+              await agentExec(
+                `Update the file ~/.openclaw/.env: if a line starting with "${envVar}=" exists, replace it with "${envVar}=${value}". Otherwise, append the line "${envVar}=${value}" to the end of the file. Create the file if it does not exist. Do NOT remove or modify any other lines. Confirm when done.`,
+                30000
+              );
+            } catch (err: any) {
+              console.error(`[Workflows] Credential update failed ${envVar}: ${err.message}`);
+            }
+          }
         }
       }
     }
 
-    // Recreate cron job if schedule changed or prompt changed
+    // Build the updated prompt for the workflow
+    let updatedPrompt: string | null = null;
+    if (template) {
+      updatedPrompt = assemblePrompt(template, updatedInstructions || "", updatedTrigger || undefined);
+    } else if (existing.generatedPrompt) {
+      updatedPrompt = existing.generatedPrompt;
+      if (additionalInstructions !== undefined && additionalInstructions !== existing.additionalInstructions) {
+        updatedPrompt = existing.generatedPrompt + "\n\n## Additional Instructions\n" + additionalInstructions;
+      }
+    }
+
+    // Recreate cron job if workflow is active
+    let newCronJobId = existing.cronJobId;
     if (existing.status === "active" && hasCronMethods()) {
       // Remove old cron job
       try {
@@ -1263,54 +1196,37 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
       }
 
       // Create new cron job
-      const agentPrompt = assemblePrompt(template, updatedInstructions, updatedTrigger);
-      try {
-        const cronResult = (await gateway.send("cron.add", {
-          name: existing.cronJobName,
-          schedule: buildCronSchedule(updatedSchedule),
-          sessionTarget: template.sessionTarget,
-          payload: { kind: "agentTurn", message: agentPrompt },
-        })) as any;
-
-        existing.cronJobId = cronResult?.id || cronResult?.jobId;
-      } catch (err: any) {
-        console.error(`[Workflows] Failed to recreate cron job: ${err.message}`);
+      const agentPrompt = updatedPrompt || getWorkflowPrompt(existing);
+      if (agentPrompt) {
+        const sessionTarget = template?.sessionTarget || "isolated";
+        try {
+          const cronResult = (await gateway.send("cron.add", {
+            name: existing.cronJobName,
+            schedule: buildCronSchedule(updatedSchedule),
+            sessionTarget,
+            payload: { kind: "agentTurn", message: agentPrompt },
+          }, 15000)) as any;
+          newCronJobId = cronResult?.id || cronResult?.jobId || null;
+        } catch (err: any) {
+          console.error(`[Workflows] Failed to recreate cron job: ${err.message}`);
+        }
       }
     }
 
-    // Update workflow in config
-    const now = new Date().toISOString();
-    await patchConfig((config) => {
-      const jarvis = config.jarvis || {};
-      const wfs = (jarvis.workflows || []).map((w: WorkflowInstance) =>
-        w.id === workflowId
-          ? {
-              ...w,
-              name: name?.trim() || w.name,
-              schedule: updatedSchedule,
-              additionalInstructions: updatedInstructions,
-              customTrigger: updatedTrigger || undefined,
-              cronJobId: existing.cronJobId,
-              updatedAt: now,
-            }
-          : w
-      );
-      return { ...config, jarvis: { ...jarvis, workflows: wfs } };
-    });
-
-    res.json({
-      ok: true,
+    // Update workflow in Prisma
+    const updated = await prisma.workflow.update({
+      where: { id: workflowId },
       data: {
-        workflow: {
-          ...existing,
-          name: name?.trim() || existing.name,
-          schedule: updatedSchedule,
-          additionalInstructions: updatedInstructions,
-          customTrigger: updatedTrigger || undefined,
-          updatedAt: now,
-        },
+        name: name?.trim() || existing.name,
+        schedule: JSON.stringify(updatedSchedule),
+        additionalInstructions: updatedInstructions || "",
+        customTrigger: updatedTrigger || null,
+        cronJobId: newCronJobId,
+        ...(updatedPrompt && !template ? { generatedPrompt: updatedPrompt } : {}),
       },
     });
+
+    res.json({ ok: true, data: { workflow: serializeWorkflow(updated) } });
   } catch (err: any) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -1320,13 +1236,10 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
 
 router.patch("/:id/toggle", async (req: AuthRequest, res: Response) => {
   try {
+    const userId = req.user!.userId;
     const workflowId = req.params.id as string;
 
-    const configResult = (await gateway.send("config.get", {})) as any;
-    const workflows: WorkflowInstance[] =
-      configResult?.config?.jarvis?.workflows || [];
-    const workflow = workflows.find((w) => w.id === workflowId);
-
+    const workflow = await prisma.workflow.findFirst({ where: { id: workflowId, userId } });
     if (!workflow) {
       res.status(404).json({ ok: false, error: "Workflow not found" });
       return;
@@ -1335,6 +1248,7 @@ router.patch("/:id/toggle", async (req: AuthRequest, res: Response) => {
     const template = getTemplateById(workflow.templateId);
     const isPausing = workflow.status === "active";
     const newStatus = isPausing ? "paused" : "active";
+    let newCronJobId = workflow.cronJobId;
 
     if (hasCronMethods()) {
       if (isPausing) {
@@ -1348,23 +1262,21 @@ router.patch("/:id/toggle", async (req: AuthRequest, res: Response) => {
         } catch {
           // Job may not exist
         }
+        newCronJobId = null;
       } else {
         // Recreate cron job to resume
-        if (template) {
-          const agentPrompt = assemblePrompt(
-            template,
-            workflow.additionalInstructions,
-            workflow.customTrigger
-          );
+        const agentPrompt = getWorkflowPrompt(workflow);
+        if (agentPrompt) {
+          const workflowSchedule = JSON.parse(workflow.schedule || "{}");
+          const sessionTarget = template?.sessionTarget || "isolated";
           try {
             const cronResult = (await gateway.send("cron.add", {
               name: workflow.cronJobName,
-              schedule: buildCronSchedule(workflow.schedule),
-              sessionTarget: template.sessionTarget,
+              schedule: buildCronSchedule(workflowSchedule),
+              sessionTarget,
               payload: { kind: "agentTurn", message: agentPrompt },
-            })) as any;
-
-            workflow.cronJobId = cronResult?.id || cronResult?.jobId;
+            }, 15000)) as any;
+            newCronJobId = cronResult?.id || cronResult?.jobId || null;
           } catch (err: any) {
             console.error(`[Workflows] Failed to recreate cron job: ${err.message}`);
           }
@@ -1372,26 +1284,15 @@ router.patch("/:id/toggle", async (req: AuthRequest, res: Response) => {
       }
     }
 
-    const now = new Date().toISOString();
-    await patchConfig((config) => {
-      const jarvis = config.jarvis || {};
-      const wfs = (jarvis.workflows || []).map((w: WorkflowInstance) =>
-        w.id === workflowId
-          ? {
-              ...w,
-              status: newStatus,
-              cronJobId: isPausing ? undefined : workflow.cronJobId,
-              updatedAt: now,
-            }
-          : w
-      );
-      return { ...config, jarvis: { ...jarvis, workflows: wfs } };
+    const updated = await prisma.workflow.update({
+      where: { id: workflowId },
+      data: {
+        status: newStatus,
+        cronJobId: newCronJobId,
+      },
     });
 
-    res.json({
-      ok: true,
-      data: { workflow: { ...workflow, status: newStatus, updatedAt: now } },
-    });
+    res.json({ ok: true, data: { workflow: serializeWorkflow(updated) } });
   } catch (err: any) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -1401,13 +1302,10 @@ router.patch("/:id/toggle", async (req: AuthRequest, res: Response) => {
 
 router.delete("/:id", async (req: AuthRequest, res: Response) => {
   try {
+    const userId = req.user!.userId;
     const workflowId = req.params.id as string;
 
-    const configResult = (await gateway.send("config.get", {})) as any;
-    const workflows: WorkflowInstance[] =
-      configResult?.config?.jarvis?.workflows || [];
-    const workflow = workflows.find((w) => w.id === workflowId);
-
+    const workflow = await prisma.workflow.findFirst({ where: { id: workflowId, userId } });
     if (!workflow) {
       res.status(404).json({ ok: false, error: "Workflow not found" });
       return;
@@ -1426,14 +1324,8 @@ router.delete("/:id", async (req: AuthRequest, res: Response) => {
       }
     }
 
-    // Remove from config
-    await patchConfig((config) => {
-      const jarvis = config.jarvis || {};
-      const wfs = (jarvis.workflows || []).filter(
-        (w: WorkflowInstance) => w.id !== workflowId
-      );
-      return { ...config, jarvis: { ...jarvis, workflows: wfs } };
-    });
+    // Remove from Prisma
+    await prisma.workflow.delete({ where: { id: workflowId } });
 
     res.json({ ok: true, data: { deleted: true } });
   } catch (err: any) {
@@ -1445,21 +1337,12 @@ router.delete("/:id", async (req: AuthRequest, res: Response) => {
 
 router.post("/:id/run", async (req: AuthRequest, res: Response) => {
   try {
+    const userId = req.user!.userId;
     const workflowId = req.params.id as string;
 
-    const configResult = (await gateway.send("config.get", {})) as any;
-    const workflows: WorkflowInstance[] =
-      configResult?.config?.jarvis?.workflows || [];
-    const workflow = workflows.find((w) => w.id === workflowId);
-
+    const workflow = await prisma.workflow.findFirst({ where: { id: workflowId, userId } });
     if (!workflow) {
       res.status(404).json({ ok: false, error: "Workflow not found" });
-      return;
-    }
-
-    const template = getTemplateById(workflow.templateId);
-    if (!template) {
-      res.status(500).json({ ok: false, error: "Workflow template not found" });
       return;
     }
 
@@ -1481,11 +1364,11 @@ router.post("/:id/run", async (req: AuthRequest, res: Response) => {
     }
 
     // Fallback: run prompt directly via agentExec
-    const agentPrompt = assemblePrompt(
-      template,
-      workflow.additionalInstructions,
-      workflow.customTrigger
-    );
+    const agentPrompt = getWorkflowPrompt(workflow);
+    if (!agentPrompt) {
+      res.status(500).json({ ok: false, error: "No prompt available for this workflow" });
+      return;
+    }
     await agentExec(agentPrompt, 120000);
     res.json({ ok: true, data: { triggered: true, method: "agentExec" } });
   } catch (err: any) {
@@ -1497,13 +1380,10 @@ router.post("/:id/run", async (req: AuthRequest, res: Response) => {
 
 router.get("/:id/history", async (req: AuthRequest, res: Response) => {
   try {
+    const userId = req.user!.userId;
     const workflowId = req.params.id as string;
 
-    const configResult = (await gateway.send("config.get", {})) as any;
-    const workflows: WorkflowInstance[] =
-      configResult?.config?.jarvis?.workflows || [];
-    const workflow = workflows.find((w) => w.id === workflowId);
-
+    const workflow = await prisma.workflow.findFirst({ where: { id: workflowId, userId } });
     if (!workflow) {
       res.status(404).json({ ok: false, error: "Workflow not found" });
       return;

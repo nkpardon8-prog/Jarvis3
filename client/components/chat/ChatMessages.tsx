@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useCallback } from "react";
 import { ChatMessage as ChatMessageType } from "@/lib/hooks/useChat";
 import type { ActionContext } from "@/lib/skill-prompts";
 import { ChatMessage } from "./ChatMessage";
@@ -25,13 +25,25 @@ export function ChatMessages({
 }: ChatMessagesProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const scrollThrottleRef = useRef(false);
 
-  // Auto-scroll to bottom on new messages or streaming
+  // Auto-scroll to bottom on new messages (not throttled)
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollIntoView({ behavior: "smooth" });
     }
-  }, [messages, streamingText, awaitingResponse]);
+  }, [messages, awaitingResponse]);
+
+  // Throttled scroll during streaming — max once per 300ms, use instant scroll
+  useEffect(() => {
+    if (!isStreaming || !streamingText) return;
+    if (scrollThrottleRef.current) return;
+    scrollThrottleRef.current = true;
+    if (scrollRef.current) {
+      scrollRef.current.scrollIntoView({ behavior: "auto" });
+    }
+    setTimeout(() => { scrollThrottleRef.current = false; }, 300);
+  }, [streamingText, isStreaming]);
 
   if (messages.length === 0 && !awaitingResponse && !isStreaming) {
     return (

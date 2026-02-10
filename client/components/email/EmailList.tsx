@@ -90,7 +90,7 @@ export function EmailList({
           <div key={msg.id} className="relative">
             <button
               onClick={() => onSelect(msg.id)}
-              className={`w-full text-left px-3 py-2.5 rounded-lg transition-colors border ${
+              className={`w-full text-left pl-3 pr-12 py-2.5 rounded-lg transition-colors border ${
                 isSelected
                   ? "bg-hud-accent/10 border-hud-accent/30"
                   : msg.read
@@ -118,41 +118,44 @@ export function EmailList({
                   <p className={`text-[11px] truncate ${msg.read ? "text-hud-text-muted" : "text-hud-text-secondary"}`}>
                     {msg.subject}
                   </p>
-                  <div className="flex items-center gap-1.5 mt-0.5">
-                    <p className="text-[10px] text-hud-text-muted/50 truncate flex-1">
-                      {msg.snippet}
-                    </p>
-                    {/* Tag badge or tag button */}
-                    {tagInfo ? (
-                      <span
-                        className="inline-flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded shrink-0 cursor-pointer"
-                        style={{
-                          backgroundColor: `${tagInfo.color || "#00d4ff"}15`,
-                          color: tagInfo.color || "#00d4ff",
-                        }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setTagMenuId(tagMenuId === msg.id ? null : msg.id);
-                        }}
-                      >
-                        {tagInfo.name}
-                      </span>
-                    ) : (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setTagMenuId(tagMenuId === msg.id ? null : msg.id);
-                        }}
-                        className="shrink-0 p-0.5 text-hud-text-muted/30 hover:text-hud-accent transition-colors"
-                        title="Add tag"
-                      >
-                        <Tag size={10} />
-                      </button>
-                    )}
-                  </div>
+                  <p className="text-[10px] text-hud-text-muted/50 truncate mt-0.5">
+                    {msg.snippet}
+                  </p>
                 </div>
               </div>
             </button>
+
+            {/* Tag controls — outside button to avoid nesting violation */}
+            <div className="absolute right-3 bottom-2.5 z-10 flex items-center">
+              {tagInfo ? (
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded shrink-0 cursor-pointer"
+                  style={{
+                    backgroundColor: `${tagInfo.color || "#00d4ff"}15`,
+                    color: tagInfo.color || "#00d4ff",
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setTagMenuId(tagMenuId === msg.id ? null : msg.id);
+                  }}
+                >
+                  {tagInfo.name}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setTagMenuId(tagMenuId === msg.id ? null : msg.id);
+                  }}
+                  className="shrink-0 p-0.5 text-hud-text-muted/30 hover:text-hud-accent transition-colors"
+                  title="Add tag"
+                >
+                  <Tag size={10} />
+                </button>
+              )}
+            </div>
 
             {/* Tag assignment dropdown */}
             {tagMenuId === msg.id && (

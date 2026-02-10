@@ -19,7 +19,8 @@ export function HomeDashboard() {
       if (!res.ok) throw new Error(res.error || "Failed to load dashboard");
       return res.data;
     },
-    refetchInterval: 15000,
+    refetchInterval: 30000,
+    refetchIntervalInBackground: false,
   });
 
   if (isLoading) {

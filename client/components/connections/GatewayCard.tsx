@@ -35,7 +35,8 @@ export function GatewayCard() {
       if (!res.ok) throw new Error(res.error || "Failed to load gateway status");
       return res.data;
     },
-    refetchInterval: 15000,
+    refetchInterval: 30000,
+    refetchIntervalInBackground: false,
   });
 
   const connected = data?.connected || false;
