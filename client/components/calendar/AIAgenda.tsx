@@ -363,21 +363,24 @@ export function AIAgenda() {
       // Set firework at this index
       setFireworkIndex(idx);
 
-      // Update local state
+      // Update local state first, then persist
       setCompletedItems((prev) => {
         const next = new Set(prev);
         next.add(idx);
-        // Persist to server
-        saveCompletions.mutate(Array.from(next));
         return next;
       });
+
+      // Persist to server (outside of setState to avoid side effects in updater)
+      const nextItems = new Set(completedItems);
+      nextItems.add(idx);
+      saveCompletions.mutate(Array.from(nextItems));
 
       // Also complete the linked todo if applicable
       if (taskId) {
         toggleTaskComplete.mutate(taskId);
       }
     },
-    [saveCompletions, toggleTaskComplete]
+    [completedItems, saveCompletions, toggleTaskComplete]
   );
 
   const handleFireworkComplete = useCallback(() => {

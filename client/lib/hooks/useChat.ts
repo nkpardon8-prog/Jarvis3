@@ -41,7 +41,7 @@ interface UseChatReturn {
 }
 
 /** Polling intervals */
-const FAST_POLL_MS = 500;
+const FAST_POLL_MS = 2000;
 const IDLE_POLL_MS = 15000;
 const SAFETY_TIMEOUT_MS = 30000;
 
@@ -109,17 +109,19 @@ export function useChat(): UseChatReturn {
   const streamingRef = useRef("");
   const initializedRef = useRef(false);
 
-  // Refs for access inside interval/callback closures
+  // Refs for access inside interval/callback closures — avoids stale closures
   const awaitingResponseRef = useRef(false);
   const messagesRef = useRef<ChatMessage[]>([]);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const safetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const knownIdsRef = useRef(new Set<string>());
   const sessionKeyRef = useRef("");
+  const pollHistoryRef = useRef<(() => Promise<void>) | undefined>(undefined);
+  const pollInFlightRef = useRef(false);
 
-  // Keep refs in sync with state
-  useEffect(() => { sessionKeyRef.current = currentSessionKey; }, [currentSessionKey]);
-  useEffect(() => { messagesRef.current = messages; }, [messages]);
+  // Keep refs in sync with state (ref-only updates, no cascading effects)
+  sessionKeyRef.current = currentSessionKey;
+  messagesRef.current = messages;
 
   /** Helper: mark response as received (clears awaiting + streaming state) */
   const markResponseReceived = useCallback(() => {
@@ -140,6 +142,10 @@ export function useChat(): UseChatReturn {
   const pollHistory = useCallback(async () => {
     const sessionKey = sessionKeyRef.current;
     if (!sessionKey) return;
+
+    // Prevent concurrent polls from stacking
+    if (pollInFlightRef.current) return;
+    pollInFlightRef.current = true;
 
     try {
       const res = await api.get<any>(
@@ -175,20 +181,24 @@ export function useChat(): UseChatReturn {
       }
     } catch {
       // Poll failure is non-critical
+    } finally {
+      pollInFlightRef.current = false;
     }
   }, [markResponseReceived]);
 
-  /** Start polling at fast (in-flight) or idle rate */
-  const startPolling = useCallback(
-    (fast: boolean) => {
-      if (pollTimerRef.current) {
-        clearInterval(pollTimerRef.current);
-      }
-      const interval = fast ? FAST_POLL_MS : IDLE_POLL_MS;
-      pollTimerRef.current = setInterval(pollHistory, interval);
-    },
-    [pollHistory]
-  );
+  // Keep pollHistory ref current for use in interval callbacks
+  pollHistoryRef.current = pollHistory;
+
+  /** Start polling at fast (in-flight) or idle rate — uses ref to avoid stale closure */
+  const startPolling = useCallback((fast: boolean) => {
+    if (pollTimerRef.current) {
+      clearInterval(pollTimerRef.current);
+    }
+    const interval = fast ? FAST_POLL_MS : IDLE_POLL_MS;
+    pollTimerRef.current = setInterval(() => {
+      pollHistoryRef.current?.();
+    }, interval);
+  }, []);
 
   /** Stop all polling */
   const stopPolling = useCallback(() => {
@@ -205,13 +215,12 @@ export function useChat(): UseChatReturn {
       safetyTimerRef.current = null;
       if (!awaitingResponseRef.current) return;
       console.log("[Chat] Safety timeout — forcing history sync");
-      await pollHistory();
-      // If still awaiting after forced poll, show a non-fatal warning
+      await pollHistoryRef.current?.();
       if (awaitingResponseRef.current) {
         console.log("[Chat] Still no response after safety timeout — continuing to poll");
       }
     }, SAFETY_TIMEOUT_MS);
-  }, [pollHistory]);
+  }, []);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -240,6 +249,7 @@ export function useChat(): UseChatReturn {
   }, []);
 
   // Load history when session changes, then start idle polling
+  // NOTE: startPolling/stopPolling are stable (empty deps) so they won't cause re-runs
   useEffect(() => {
     if (!currentSessionKey) return;
 
@@ -272,6 +282,7 @@ export function useChat(): UseChatReturn {
   }, [currentSessionKey, startPolling, stopPolling]);
 
   // Subscribe to socket events
+  // NOTE: Using refs for callbacks that change — socket is the only real dependency
   useEffect(() => {
     if (!socket) return;
 
@@ -299,11 +310,10 @@ export function useChat(): UseChatReturn {
       } else if (payload?.status === "idle") {
         setIsThinking(false);
         setIsStreaming(false);
-        // Do NOT clear awaitingResponse here — wait for actual message arrival.
-        // But trigger immediate poll to check for the response.
+        // Trigger immediate poll to check for the response
         if (awaitingResponseRef.current) {
           console.log("[Chat] Idle status while awaiting — immediate poll");
-          pollHistory();
+          pollHistoryRef.current?.();
         }
       }
     };
@@ -366,7 +376,8 @@ export function useChat(): UseChatReturn {
       socket.off("chat:session-state", handleSessionState);
       socket.off("chat:error", handleError);
     };
-  }, [socket, pollHistory, startPolling, markResponseReceived]);
+    // markResponseReceived and startPolling are stable (empty/no deps that change)
+  }, [socket, markResponseReceived, startPolling]);
 
   // Auto-prompt
   const autoPromptHandled = useRef(false);

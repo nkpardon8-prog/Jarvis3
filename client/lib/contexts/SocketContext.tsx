@@ -63,7 +63,9 @@ export function SocketProvider({ children }: { children: ReactNode }) {
           return;
         }
 
-        const newSocket = io("http://localhost:3001", {
+        // Socket.io must connect directly to Express (not through Next.js proxy)
+        const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:3001";
+        const newSocket = io(socketUrl, {
           auth: { token },
           transports: ["websocket"],
           reconnection: true,

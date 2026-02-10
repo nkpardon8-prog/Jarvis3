@@ -4,6 +4,33 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-10 — Fix UI freeze: stabilize chat polling, scroll throttling, effect chains
+
+**Author:** Nick (via Claude Code)
+**Commit:** fix: stabilize chat polling, throttle scroll, break effect cascades
+**Branch:** main
+
+**What changed:**
+- **useChat.ts — Broke cascading effect chains**: Replaced two `useEffect` hooks that synced refs (`sessionKeyRef`, `messagesRef`) with direct ref assignment in the render body. This eliminates two effects that fired on every state change and could trigger downstream effect chains.
+- **useChat.ts — Stabilized `startPolling`/`stopPolling`**: Removed `pollHistory` from `startPolling`'s dependency array by using a `pollHistoryRef` pattern. Now `startPolling` and `stopPolling` have **empty dependency arrays** and never recreate, which means effects depending on them are stable and don't re-run spuriously.
+- **useChat.ts — Increased fast poll interval**: Changed from 500ms to 2000ms. The 500ms interval was creating sustained high-frequency API calls during active responses, each triggering full history reconciliation.
+- **useChat.ts — Added concurrent poll guard**: `pollInFlightRef` prevents overlapping poll requests from stacking up when the previous one hasn't resolved yet.
+- **useChat.ts — Socket effect stabilized**: The socket event handler effect now only re-runs when `socket` changes (plus two stable callbacks). Previously it had `pollHistory`, `startPolling`, `markResponseReceived` as dependencies which could cascade.
+- **ChatMessages.tsx — Throttled streaming scroll**: Split auto-scroll into two effects: one for new messages (smooth scroll, runs on `messages`/`awaitingResponse` changes only), and one for streaming tokens (instant scroll, throttled to max once per 300ms). Previously every streaming token triggered `scrollIntoView({ behavior: "smooth" })`, queuing expensive smooth-scroll animations faster than they could complete.
+- **AIAgenda.tsx — Moved mutation out of setState updater**: `saveCompletions.mutate()` was being called inside a `setCompletedItems` updater function, which is a side effect in a state updater. Moved to a separate call after the state update.
+- **SocketContext.tsx — Configurable socket URL**: Socket.io URL now reads from `NEXT_PUBLIC_SOCKET_URL` env var, falling back to `http://localhost:3001`. Production deployments can set this without code changes.
+
+**Why:**
+- The app was freezing after clicking around for a while. Root cause: cascading `useEffect` chains in `useChat.ts` where callback recreation triggered effect re-runs, which recreated callbacks, which triggered more effects. Combined with 500ms polling (creating 2 API calls/second even when idle after a response), unthrottled smooth-scroll animations during streaming, and side effects inside setState updaters, the React render loop would eventually bog down to the point of freezing.
+
+**Files touched:**
+- `client/lib/hooks/useChat.ts` — Stabilized all callback deps, added pollHistoryRef pattern, increased fast poll, added poll concurrency guard
+- `client/components/chat/ChatMessages.tsx` — Split scroll into message-triggered (smooth) and stream-triggered (instant, throttled 300ms)
+- `client/components/calendar/AIAgenda.tsx` — Moved mutation out of setState updater
+- `client/lib/contexts/SocketContext.tsx` — Made socket URL configurable via env var
+
+---
+
 ## 2026-02-10 — Agenda mark-complete with persistence + sci-fi firework animation
 
 **Author:** Nick (via Claude Code)
