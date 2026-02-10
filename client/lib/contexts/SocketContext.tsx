@@ -3,6 +3,7 @@
 import {
   createContext,
   useEffect,
+  useMemo,
   useState,
   useCallback,
   ReactNode,
@@ -111,8 +112,10 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     };
   }, [isAuthenticated]);
 
+  const value = useMemo(() => ({ socket, connected }), [socket, connected]);
+
   return (
-    <SocketContext.Provider value={{ socket, connected }}>
+    <SocketContext.Provider value={value}>
       {children}
     </SocketContext.Provider>
   );

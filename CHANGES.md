@@ -4,6 +4,25 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-10 — Fix infinite re-render loop: memoize Context Provider values
+
+**Author:** Nick (via Claude Code)
+**Commit:** fix: memoize AuthContext and SocketContext provider values to stop infinite re-renders
+**Branch:** main
+
+**What changed:**
+- **AuthContext.tsx — Wrapped provider value in `useMemo`**: The `value={{ user, isLoading, ... }}` inline object was creating a new reference on every render, causing every component that calls `useAuth()` to re-render, which triggered their effects, which caused state changes, which triggered more renders — an infinite loop. Now memoized with stable deps.
+- **SocketContext.tsx — Wrapped provider value in `useMemo`**: Same pattern — `value={{ socket, connected }}` was a new object each render. Now `useMemo(() => ({ socket, connected }), [socket, connected])`.
+
+**Why:**
+- This was the root cause of the "rendering" freeze. React Context propagates updates to ALL consumers when the Provider value changes by reference. Without `useMemo`, every single render of the AuthProvider created a new object, which forced every `useAuth()` consumer to re-render, which triggered effects in those components, which caused state changes, which triggered AuthProvider to re-render again — infinite loop. The SocketContext compounded this since it sits inside the AuthProvider tree and consumes `useAuth()`.
+
+**Files touched:**
+- `client/lib/contexts/AuthContext.tsx` — Added `useMemo` for provider value, extracted `isAuthenticated` to a variable
+- `client/lib/contexts/SocketContext.tsx` — Added `useMemo` for provider value
+
+---
+
 ## 2026-02-10 — Fix UI freeze: stabilize chat polling, scroll throttling, effect chains
 
 **Author:** Nick (via Claude Code)
