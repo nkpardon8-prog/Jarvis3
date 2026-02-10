@@ -4,6 +4,33 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-10 — Agenda mark-complete with persistence + sci-fi firework animation
+
+**Author:** Nick (via Claude Code)
+**Commit:** feat: agenda mark-complete with persistence and sci-fi firework animation
+**Branch:** main
+
+**What changed:**
+- **`completedItems` field on SavedAgenda**: New `String @default("[]")` field stores JSON array of completed item indices, persisted to DB.
+- **PATCH `/calendar/agenda` endpoint**: Accepts `{ date, completedItems }` to update completed items for a saved agenda. Validates date format and array type.
+- **GET `/calendar/agenda` returns `completedItems`**: Saved completions are now included in the response so they restore on page load.
+- **Mark Complete on all agenda items**: Every item (events, tasks, breaks, lunch, activities) now has a "Mark Complete" button — not just tasks with a `taskId`. Items with a linked `taskId` also mark the actual todo as complete in the DB.
+- **Persistent completions**: Completed items survive page refresh, tab switches, and browser close. Stored by item index in the `SavedAgenda` record. Reset on agenda rebuild.
+- **Sci-fi firework particle animation**: Canvas-based particle burst (28 particles, 2 rings) plays inline next to the item when marked complete. Uses the HUD color palette (cyan, green, amber, purple, white) with radial gradient flash, glow trails, and natural decay. Auto-cleans up after ~55 frames.
+- **Progress bar**: Gradient bar (green→cyan) below stats row shows completion progress as a percentage.
+- **Completion counter**: Stats bar shows "X/Y done" with green checkmark when items are completed.
+- **Visual completion states**: Completed items fade to 50% opacity, show green CheckCircle2 icon, line-through text, "done" badge replacing type badge, and green timeline dot.
+
+**Why:**
+- "Mark Complete" previously only worked for tasks with a `taskId` and was lost on refresh — purely cosmetic. Now all items can be marked complete, the state persists to the database, and the firework animation gives satisfying feedback in the Iron Man HUD style.
+
+**Files touched:**
+- `server/prisma/schema.prisma` — Added `completedItems` field to `SavedAgenda`
+- `server/src/routes/calendar.ts` — Added PATCH `/calendar/agenda`, updated GET `/agenda` to return completedItems
+- `client/components/calendar/AIAgenda.tsx` — Complete rewrite: SciFiFirework canvas component, persistent completions via PATCH, mark-complete on all items, progress bar, completion counter
+
+---
+
 ## 2026-02-10 — AI Agenda persistence + pre-run for tomorrow
 
 **Author:** Nick (via Claude Code)

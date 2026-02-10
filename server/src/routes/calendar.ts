@@ -547,6 +547,11 @@ router.get("/agenda", async (req: AuthRequest, res: Response) => {
       weekday: "long", year: "numeric", month: "long", day: "numeric",
     });
 
+    let completedItems: number[] = [];
+    try {
+      completedItems = JSON.parse(saved.completedItems || "[]");
+    } catch { completedItems = []; }
+
     res.json({
       ok: true,
       data: {
@@ -556,9 +561,45 @@ router.get("/agenda", async (req: AuthRequest, res: Response) => {
         dateKey,
         eventCount: saved.eventCount,
         taskCount: saved.taskCount,
+        completedItems,
         savedAt: saved.updatedAt.toISOString(),
       },
     });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── Update Agenda Completions ───────────────────────────
+
+router.patch("/agenda", async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const { date, completedItems } = req.body;
+
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      res.status(400).json({ ok: false, error: "Invalid date format. Use YYYY-MM-DD." });
+      return;
+    }
+    if (!Array.isArray(completedItems)) {
+      res.status(400).json({ ok: false, error: "completedItems must be an array of indices." });
+      return;
+    }
+
+    const saved = await prisma.savedAgenda.findUnique({
+      where: { userId_date: { userId, date } },
+    });
+    if (!saved) {
+      res.status(404).json({ ok: false, error: "No saved agenda for this date." });
+      return;
+    }
+
+    await prisma.savedAgenda.update({
+      where: { userId_date: { userId, date } },
+      data: { completedItems: JSON.stringify(completedItems) },
+    });
+
+    res.json({ ok: true, data: { completedItems } });
   } catch (err: any) {
     res.status(500).json({ ok: false, error: err.message });
   }
