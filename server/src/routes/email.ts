@@ -1,12 +1,10 @@
 import { Router, Response } from "express";
 import { google } from "googleapis";
-import { randomBytes, createHash } from "crypto";
+import { randomBytes, createHash, randomUUID } from "crypto";
 import { authMiddleware } from "../middleware/auth";
 import { AuthRequest } from "../types";
 import { prisma } from "../services/prisma";
 import { getTokensForProvider, getGoogleApiClient } from "../services/oauth.service";
-import { retagAllEmails } from "../services/email-intelligence.service";
-import { AutomationNotConfiguredError } from "../services/automation.service";
 import {
   provisionOpenClawGoogleProxy,
   getProvisionStatus,
@@ -14,6 +12,8 @@ import {
   resetBackfillFlag,
   ProvisionError,
 } from "../services/openclaw-google-proxy.service";
+import { gateway } from "../gateway/connection";
+import { config } from "../config";
 
 const router = Router();
 
@@ -505,105 +505,510 @@ router.get("/email-tags", async (req: AuthRequest, res: Response) => {
   }
 });
 
-// ─── Auto-tag all emails ────────────────────────────────────────
+// ─── OpenClaw-native email tagging (cron-based) ─────────────────
 
-// In-memory auto-tag job status per user
-interface AutoTagJob { status: "running" | "done" | "error"; processed: number; total: number; error?: string }
-const autoTagJobs = new Map<string, AutoTagJob>();
+/** Send a prompt to the agent and wait for full response */
+async function agentExec(prompt: string, timeoutMs = 60000): Promise<any> {
+  const defaults = gateway.sessionDefaults;
+  const agentId = defaults?.defaultAgentId || "main";
+  const mainKey = defaults?.mainKey || "main";
+  const sessionKey = `agent:${agentId}:${mainKey}`;
+  return gateway.send(
+    "chat.send",
+    {
+      sessionKey,
+      message: prompt,
+      deliver: "full",
+      thinking: "low",
+      idempotencyKey: `tagging-${Date.now()}-${randomUUID().slice(0, 8)}`,
+    },
+    timeoutMs
+  );
+}
 
-router.post("/auto-tag", async (req: AuthRequest, res: Response) => {
+/** Check if cron gateway methods are available */
+function hasCronMethod(method: string): boolean {
+  const methods = gateway.availableMethods || [];
+  return methods.includes(method);
+}
+
+/** Check if cron gateway methods are available */
+function hasCronMethods(): boolean {
+  return hasCronMethod("cron.add");
+}
+
+/** Resolve the Jarvis proxy base URL (production-safe, no hardcoded localhost) */
+function getProxyUrl(): string {
+  return config.oauthBaseUrl || `http://localhost:${config.port}`;
+}
+
+const TAGGING_INTERVAL_MS = 30 * 60 * 1000;
+const TAGGING_HEALTH_GRACE_MS = 5 * 60 * 1000;
+
+function parseCronDate(value: unknown): Date | null {
+  if (!value) return null;
+  const d = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function pickLatestDate(a: Date | null, b: Date | null): Date | null {
+  if (a && b) return a.getTime() >= b.getTime() ? a : b;
+  return a || b;
+}
+
+async function getLiveCronJob(schedule: {
+  cronJobId?: string | null;
+  cronJobName?: string | null;
+}): Promise<{ ok: boolean; job: any | null }> {
+  if (!gateway.isConnected || !hasCronMethod("cron.list")) return { ok: false, job: null };
+
+  try {
+    const cronResult = (await gateway.send("cron.list", {})) as any;
+    const jobs = Array.isArray(cronResult?.jobs)
+      ? cronResult.jobs
+      : Array.isArray(cronResult)
+        ? cronResult
+        : [];
+
+    const job =
+      jobs.find((j: any) => {
+        const id = j?.id || j?.jobId;
+        if (schedule.cronJobId && id === schedule.cronJobId) return true;
+        if (schedule.cronJobName && j?.name === schedule.cronJobName) return true;
+        return false;
+      }) || null;
+
+    return { ok: true, job };
+  } catch {
+    return { ok: false, job: null };
+  }
+}
+
+function deriveTaggingSchedulerHealth(
+  schedule: any,
+  liveCronJob: any | null,
+  cronLookupOk: boolean
+) {
+  const cronAvailable = hasCronMethod("cron.list");
+  const gatewayConnected = gateway.isConnected;
+  const now = Date.now();
+
+  const dbLastRun = schedule?.lastRunAt ? new Date(schedule.lastRunAt) : null;
+  const liveLastRun = parseCronDate(liveCronJob?.lastRun);
+  const nextRun = parseCronDate(liveCronJob?.nextRun);
+  const effectiveLastRun = pickLatestDate(dbLastRun, liveLastRun);
+
+  let health: "healthy" | "delayed" | "unhealthy" | "unknown" = "unknown";
+  let message: string | null = null;
+  let cronJobFound: boolean | null = null;
+
+  if (!schedule?.enabled) {
+    health = "unknown";
+  } else if (!gatewayConnected) {
+    health = "unknown";
+    message = "Gateway disconnected — scheduler state unavailable.";
+  } else {
+    health = "healthy";
+
+    if (cronAvailable) {
+      if (!cronLookupOk) {
+        health = "unknown";
+        message = "Unable to verify scheduler state right now.";
+      } else {
+        cronJobFound = !!liveCronJob;
+      }
+      if (cronLookupOk && !liveCronJob) {
+        health = "unhealthy";
+        message = "Tagging scheduler job is missing. Disable and re-enable Auto-Tag.";
+      }
+    }
+
+    if (health === "healthy" && nextRun && nextRun.getTime() + TAGGING_HEALTH_GRACE_MS < now) {
+      health = "unhealthy";
+      message = "Tagging scheduler missed the expected run window.";
+    }
+
+    if (health === "healthy" && effectiveLastRun) {
+      if (now - effectiveLastRun.getTime() > TAGGING_INTERVAL_MS * 2 + TAGGING_HEALTH_GRACE_MS) {
+        health = "unhealthy";
+        message = "No tagging run has been recorded recently.";
+      }
+    }
+
+    if (health === "healthy" && !effectiveLastRun) {
+      const enabledAt = schedule?.updatedAt ? new Date(schedule.updatedAt).getTime() : now;
+      if (now - enabledAt > TAGGING_INTERVAL_MS + TAGGING_HEALTH_GRACE_MS) {
+        health = "delayed";
+        message = "First tagging run has not reported back yet.";
+      }
+    }
+  }
+
+  return {
+    health,
+    message,
+    gatewayConnected,
+    cronAvailable,
+    cronJobFound,
+    expectedIntervalMinutes: 30,
+    liveLastRunAt: liveLastRun?.toISOString() || null,
+    nextRunAt: nextRun?.toISOString() || null,
+  };
+}
+
+async function triggerTaggingRun(params: {
+  cronJobId?: string | null;
+  cronJobName?: string | null;
+  agentPrompt: string;
+}): Promise<"cron.run" | "agentExec"> {
+  if (hasCronMethod("cron.run")) {
+    try {
+      const runParams: any = { mode: "force" };
+      if (params.cronJobId) runParams.jobId = params.cronJobId;
+      else if (params.cronJobName) runParams.name = params.cronJobName;
+      await gateway.send("cron.run", runParams);
+      return "cron.run";
+    } catch {
+      // Fall through to agentExec
+    }
+  }
+
+  agentExec(params.agentPrompt, 120000).catch((err) => {
+    console.error(`[Email] Tagging run fallback error: ${err.message}`);
+  });
+  return "agentExec";
+}
+
+/** Build a self-contained tagging cron prompt with embedded proxy URL and auth instructions.
+ *  Isolated cron sessions do NOT auto-source ~/.openclaw/.env, so this prompt must
+ *  tell the agent explicitly how to authenticate and what endpoints to call. */
+function buildTaggingPrompt(proxyUrl: string): string {
+  return `You are running a scheduled email-tagging job for Jarvis.
+
+## Prerequisites
+
+Before making any HTTP requests, read the file ~/.openclaw/.env to load your environment variables. You need JARVIS_GOOGLE_PROXY_TOKEN from that file. If the file does not exist or the variable is missing, report an error and stop.
+
+## Configuration
+
+- Proxy Base URL: ${proxyUrl}/api/google-proxy
+- Authentication: Include this header on EVERY request:
+  Authorization: Bearer <value of JARVIS_GOOGLE_PROXY_TOKEN from ~/.openclaw/.env>
+
+## Workflow
+
+### Step 1 — Read tagging config
+GET ${proxyUrl}/api/google-proxy/tagging/config
+- If "enabled" is false or tags array is empty → POST results with status "noop" and stop.
+- Note the "mode" (backfill or incremental) and "lastCheckpoint" values.
+
+### Step 2 — Fetch emails
+GET ${proxyUrl}/api/google-proxy/messages?maxResults=50
+- If mode is "incremental" and lastCheckpoint is set, add &q=after:<lastCheckpoint_as_epoch_seconds> to only fetch recent mail.
+- If no messages are returned, POST results with status "noop" and stop.
+
+### Step 3 — Classify each email
+For each email, read its full content:
+GET ${proxyUrl}/api/google-proxy/messages/<messageId>
+Compare the email subject, sender, and body against each tag's classification criteria. Assign the best-matching tag (or skip if no tag matches).
+
+### Step 4 — Apply Gmail labels
+For tagged emails, ensure a Gmail label exists for each tag name:
+- GET ${proxyUrl}/api/google-proxy/labels — check existing labels
+- POST ${proxyUrl}/api/google-proxy/labels with { "name": "<TagName>" } — create if missing
+Then apply labels:
+- POST ${proxyUrl}/api/google-proxy/messages/modify with { "messageIds": [...], "addLabelIds": ["<labelId>"] }
+
+### Step 5 — Report results
+POST ${proxyUrl}/api/google-proxy/tagging/results with JSON body:
+{
+  "status": "ok" | "error" | "noop",
+  "mode": "<backfill or incremental>",
+  "processed": <number>,
+  "tagged": <number>,
+  "skipped": <number>,
+  "failed": <number>,
+  "newCheckpoint": "<ISO date of newest email processed>",
+  "results": [{ "emailId": "<id>", "tagName": "<tag>", "summary": "<brief reason>" }, ...],
+  "errors": ["<error message>", ...]
+}
+
+## Error Handling
+- If proxy auth fails (401/403), POST results with status "error" and errors: ["Proxy authentication failed — token may be invalid"]. Then stop.
+- If any individual email fails, skip it, increment "failed", and continue with the rest.
+- ALWAYS POST results at the end, even on error — this updates the Jarvis UI with run status.
+- Never fail silently.
+
+## Response format
+All proxy endpoints return { ok: boolean, data?: T, error?: string }.`;
+}
+
+// ─── GET /tagging/status — Current tagging schedule status ───
+
+router.get("/tagging/status", async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.userId;
+    const schedule = await prisma.taggingSchedule.findUnique({ where: { userId } });
 
-    // If already running, reject
-    const existing = autoTagJobs.get(userId);
-    if (existing?.status === "running") {
-      res.json({ ok: true, data: { status: "running", processed: existing.processed, total: existing.total } });
+    if (!schedule) {
+      res.json({
+        ok: true,
+        data: {
+          enabled: false,
+          mode: "backfill",
+          lastRunAt: null,
+          lastRunStatus: null,
+          lastRunSummary: null,
+          cronJobName: null,
+          scheduler: {
+            health: "unknown",
+            message: null,
+            gatewayConnected: gateway.isConnected,
+            cronAvailable: hasCronMethod("cron.list"),
+            cronJobFound: null,
+            expectedIntervalMinutes: 30,
+            liveLastRunAt: null,
+            nextRunAt: null,
+          },
+        },
+      });
       return;
     }
 
-    // Validate upfront before going async
-    const googleTokens = await getTokensForProvider(userId, "google");
-    const msTokens = await getTokensForProvider(userId, "microsoft");
+    const live = await getLiveCronJob(schedule);
+    const liveCronJob = live.job;
+    const scheduler = deriveTaggingSchedulerHealth(schedule, liveCronJob, live.ok);
 
-    if (!googleTokens && !msTokens) {
-      res.status(400).json({ ok: false, error: "No email provider connected." });
-      return;
-    }
+    const dbLastRun = schedule.lastRunAt ? new Date(schedule.lastRunAt) : null;
+    const liveLastRun = parseCronDate(liveCronJob?.lastRun);
+    const effectiveLastRun = pickLatestDate(dbLastRun, liveLastRun);
 
-    // Initialize job and respond immediately
-    autoTagJobs.set(userId, { status: "running", processed: 0, total: 0 });
-    res.json({ ok: true, data: { status: "running", processed: 0, total: 0 } });
+    const enriched: any = {
+      ...schedule,
+      lastRunAt: effectiveLastRun?.toISOString() || schedule.lastRunAt,
+      scheduler,
+    };
 
-    // Run in background — not awaited
-    (async () => {
-      try {
-        const messages: EmailMessage[] = [];
-        const now = new Date();
-        const thirtyDaysAgo = new Date(now);
-        thirtyDaysAgo.setMonth(thirtyDaysAgo.getMonth() - 1);
-
-        if (googleTokens) {
-          try {
-            const gmailMessages = await fetchGmailMessages(userId, googleTokens.accessToken, 200, thirtyDaysAgo, now);
-            messages.push(...gmailMessages);
-          } catch (err: any) {
-            console.error("[AutoTag] Gmail fetch error:", err.message);
-          }
-        }
-
-        if (msTokens) {
-          try {
-            const outlookMessages = await fetchOutlookMessages(msTokens.accessToken, 200, thirtyDaysAgo, now);
-            messages.push(...outlookMessages);
-          } catch (err: any) {
-            console.error("[AutoTag] Outlook fetch error:", err.message);
-          }
-        }
-
-        const job = autoTagJobs.get(userId)!;
-        job.total = messages.length;
-
-        if (messages.length === 0) {
-          job.status = "done";
-          return;
-        }
-
-        const processed = await retagAllEmails(userId, messages, (count) => {
-          job.processed = count;
-        });
-        job.processed = processed;
-        job.status = "done";
-      } catch (err: any) {
-        const job = autoTagJobs.get(userId);
-        if (job) {
-          job.status = "error";
-          job.error = err.message;
-        }
-        console.error("[AutoTag] Background job error:", err.message);
+    if (schedule.enabled && scheduler.health !== "healthy") {
+      if (enriched.lastRunStatus === "ok") {
+        enriched.lastRunStatus = "error";
       }
-    })();
-  } catch (err: any) {
-    if (err instanceof AutomationNotConfiguredError) {
-      res.status(400).json({ ok: false, error: err.message });
-      return;
+      if (!enriched.errorMessage && scheduler.message) {
+        enriched.errorMessage = scheduler.message;
+      }
     }
+
+    res.json({ ok: true, data: enriched });
+  } catch (err: any) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// ─── Auto-tag job status (poll) ──────────────────────────────
-router.get("/auto-tag/status", async (req: AuthRequest, res: Response) => {
-  const userId = req.user!.userId;
-  const job = autoTagJobs.get(userId);
-  if (!job) {
-    res.json({ ok: true, data: { status: "idle" } });
-    return;
+// ─── POST /tagging/enable — Enable auto-tagging cron ─────────
+
+router.post("/tagging/enable", async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+
+    if (!gateway.isConnected) {
+      res.status(400).json({ ok: false, error: "Gateway not connected. Connect to OpenClaw first." });
+      return;
+    }
+
+    // Pre-check: Google must be connected
+    const googleTokens = await getTokensForProvider(userId, "google");
+    if (!googleTokens) {
+      res.status(400).json({ ok: false, error: "Google account not connected. Connect Google first, then enable tagging." });
+      return;
+    }
+
+    // Only provision if not already successfully provisioned.
+    // provisionOpenClawGoogleProxy always rotates the token (plaintext isn't stored),
+    // so calling it unnecessarily desyncs the DB hash from the .env plaintext.
+    const [provisionStatus, existingToken] = await Promise.all([
+      prisma.proxyProvisionStatus.findUnique({ where: { userId } }),
+      prisma.proxyApiToken.findUnique({ where: { userId } }),
+    ]);
+
+    const alreadyProvisioned = provisionStatus?.status === "success" && !!existingToken;
+
+    if (!alreadyProvisioned) {
+      try {
+        resetBackfillFlag(userId);
+        await provisionOpenClawGoogleProxy(userId);
+      } catch (err: any) {
+        if (err instanceof ProvisionError) {
+          res.status(400).json({ ok: false, error: err.message });
+          return;
+        }
+        console.error(`[Email] Proxy provisioning failed during tagging enable: ${err.message}`);
+        res.status(500).json({ ok: false, error: `Proxy provisioning failed: ${err.message}` });
+        return;
+      }
+    }
+
+    const proxyUrl = getProxyUrl();
+    const cronJobName = `jarvis-email-tagging-${userId.slice(0, 8)}`;
+    const agentPrompt = buildTaggingPrompt(proxyUrl);
+
+    // Create/update DB record
+    const schedule = await prisma.taggingSchedule.upsert({
+      where: { userId },
+      update: {
+        enabled: true,
+        cronJobName,
+        mode: "backfill",
+        lastCheckpoint: null,
+        lastRunAt: null,
+        lastRunStatus: null,
+        lastRunSummary: null,
+        errorMessage: null,
+      },
+      create: {
+        userId,
+        enabled: true,
+        cronJobName,
+        mode: "backfill",
+        lastCheckpoint: null,
+      },
+    });
+
+    // Register cron job — every 30 minutes
+    let cronJobId: string | undefined;
+
+    if (hasCronMethods()) {
+      try {
+        const cronResult = (await gateway.send("cron.add", {
+          name: cronJobName,
+          schedule: { kind: "every", everyMs: 1800000 },
+          sessionTarget: "isolated",
+          payload: {
+            kind: "agentTurn",
+            message: agentPrompt,
+          },
+        })) as any;
+        cronJobId = cronResult?.id || cronResult?.jobId;
+      } catch (err: any) {
+        console.error(`[Email] cron.add failed: ${err.message}, trying agentExec fallback`);
+        try {
+          await agentExec(
+            `Create a cron job named "${cronJobName}" with the following configuration:\n- Schedule: every 30 minutes\n- Session: isolated\n- Prompt: ${agentPrompt}\n\nConfirm when the cron job has been created.`,
+            30000
+          );
+        } catch (fallbackErr: any) {
+          console.error(`[Email] agentExec cron creation failed: ${fallbackErr.message}`);
+        }
+      }
+    } else {
+      try {
+        await agentExec(
+          `Create a cron job named "${cronJobName}" with the following configuration:\n- Schedule: every 30 minutes\n- Session: isolated\n- Prompt: ${agentPrompt}\n\nConfirm when the cron job has been created.`,
+          30000
+        );
+      } catch (err: any) {
+        console.error(`[Email] agentExec cron creation failed: ${err.message}`);
+      }
+    }
+
+    // Update cronJobId if we got one
+    if (cronJobId) {
+      await prisma.taggingSchedule.update({
+        where: { userId },
+        data: { cronJobId },
+      });
+    }
+
+    const triggerMethod = await triggerTaggingRun({
+      cronJobId: cronJobId || schedule.cronJobId,
+      cronJobName: schedule.cronJobName,
+      agentPrompt,
+    });
+
+    const updated = await prisma.taggingSchedule.findUnique({ where: { userId } });
+    res.json({
+      ok: true,
+      data: {
+        ...updated,
+        initialRunTriggered: true,
+        triggerMethod,
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err.message });
   }
-  res.json({ ok: true, data: job });
-  // Clean up finished jobs after client reads them
-  if (job.status === "done" || job.status === "error") {
-    autoTagJobs.delete(userId);
+});
+
+// ─── POST /tagging/disable — Disable auto-tagging cron ───────
+
+router.post("/tagging/disable", async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+
+    const schedule = await prisma.taggingSchedule.findUnique({ where: { userId } });
+    if (!schedule) {
+      res.json({ ok: true, data: { enabled: false } });
+      return;
+    }
+
+    // Remove cron job
+    if (hasCronMethods()) {
+      try {
+        if (schedule.cronJobId) {
+          await gateway.send("cron.remove", { jobId: schedule.cronJobId });
+        } else if (schedule.cronJobName) {
+          await gateway.send("cron.remove", { name: schedule.cronJobName });
+        }
+      } catch {
+        // Job may not exist
+      }
+    }
+
+    await prisma.taggingSchedule.update({
+      where: { userId },
+      data: { enabled: false },
+    });
+
+    res.json({ ok: true, data: { enabled: false } });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── POST /tagging/run — Manual trigger ──────────────────────
+
+router.post("/tagging/run", async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+
+    let schedule = await prisma.taggingSchedule.findUnique({ where: { userId } });
+    if (!schedule || !schedule.enabled) {
+      res.status(400).json({ ok: false, error: "Tagging is not enabled. Enable it first." });
+      return;
+    }
+
+    // Manual rerun must be one-shot full pass before returning to incremental.
+    schedule = await prisma.taggingSchedule.update({
+      where: { userId },
+      data: {
+        mode: "backfill",
+        lastCheckpoint: null,
+        lastRunAt: null,
+        lastRunStatus: null,
+        lastRunSummary: null,
+        errorMessage: null,
+      },
+    });
+
+    const proxyUrl = getProxyUrl();
+    const triggerMethod = await triggerTaggingRun({
+      cronJobId: schedule.cronJobId,
+      cronJobName: schedule.cronJobName,
+      agentPrompt: buildTaggingPrompt(proxyUrl),
+    });
+
+    res.json({ ok: true, data: { triggered: true, method: triggerMethod, mode: "backfill" } });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 

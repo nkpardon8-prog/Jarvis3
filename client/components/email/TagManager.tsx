@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import { HudButton } from "@/components/ui/HudButton";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
-import { Plus, Trash2, Edit2, Tag, Sparkles, Check, X } from "lucide-react";
+import { Plus, Trash2, Edit2, Tag, Sparkles, Check, X, Play, Clock } from "lucide-react";
 
 interface TagManagerProps {
   tags: any[];
@@ -81,40 +81,60 @@ export function TagManager({ tags }: TagManagerProps) {
     },
   });
 
-  // Auto-tag: fire-and-forget with polling
-  const [autoTagStatus, setAutoTagStatus] = useState<{ status: string; processed: number; total: number; error?: string } | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval>>(undefined);
-
-  const autoTag = useMutation({
-    mutationFn: async () => {
-      const res = await api.post<any>("/email/auto-tag");
-      if (!res.ok) throw new Error(res.error || "Auto-tagging failed");
+  // ─── Tagging schedule (OpenClaw cron) ─────────────────────
+  const { data: taggingStatus, isLoading: taggingLoading } = useQuery({
+    queryKey: ["tagging-status"],
+    queryFn: async () => {
+      const res = await api.get<any>("/email/tagging/status");
+      if (!res.ok) throw new Error(res.error);
       return res.data;
     },
-    onSuccess: (data) => {
-      setAutoTagStatus({ status: "running", processed: 0, total: data?.total || 0 });
-      // Start polling for progress — invalidate tags on every tick so UI updates live
-      pollRef.current = setInterval(async () => {
-        try {
-          const res = await api.get<any>("/email/auto-tag/status");
-          if (!res.ok) return;
-          const job = res.data;
-          setAutoTagStatus(job);
-          // Refresh tags on every poll so new tags appear in real time
-          queryClient.invalidateQueries({ queryKey: ["email-tags"] });
-          if (job.status === "done" || job.status === "error" || job.status === "idle") {
-            clearInterval(pollRef.current);
-            pollRef.current = undefined;
-          }
-        } catch { /* ignore */ }
-      }, 3000);
+    refetchInterval: 30000, // Refresh every 30s to pick up run updates
+  });
+
+  const enableTagging = useMutation({
+    mutationFn: async () => {
+      const res = await api.post<any>("/email/tagging/enable");
+      if (!res.ok) throw new Error(res.error || "Failed to enable tagging");
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["tagging-status"] });
     },
   });
 
-  // Cleanup polling on unmount
-  useEffect(() => {
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, []);
+  const disableTagging = useMutation({
+    mutationFn: async () => {
+      const res = await api.post<any>("/email/tagging/disable");
+      if (!res.ok) throw new Error(res.error || "Failed to disable tagging");
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["tagging-status"] });
+    },
+  });
+
+  const runTagging = useMutation({
+    mutationFn: async () => {
+      const res = await api.post<any>("/email/tagging/run");
+      if (!res.ok) throw new Error(res.error || "Failed to trigger tagging");
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["tagging-status"] });
+    },
+  });
+
+  const isTaggingEnabled = taggingStatus?.enabled === true;
+  const isToggling = enableTagging.isPending || disableTagging.isPending;
+
+  const handleToggle = () => {
+    if (isTaggingEnabled) {
+      disableTagging.mutate();
+    } else {
+      enableTagging.mutate();
+    }
+  };
 
   const resetForm = () => {
     setName("");
@@ -144,6 +164,32 @@ export function TagManager({ tags }: TagManagerProps) {
     }
   };
 
+  // Format last run time
+  const formatLastRun = (isoDate: string | null) => {
+    if (!isoDate) return null;
+    const d = new Date(isoDate);
+    const now = new Date();
+    const diffMs = now.getTime() - d.getTime();
+    const diffMin = Math.floor(diffMs / 60000);
+    if (diffMin < 1) return "just now";
+    if (diffMin < 60) return `${diffMin}m ago`;
+    const diffHrs = Math.floor(diffMin / 60);
+    if (diffHrs < 24) return `${diffHrs}h ago`;
+    return d.toLocaleDateString();
+  };
+
+  const formatNextRun = (isoDate: string | null) => {
+    if (!isoDate) return null;
+    const d = new Date(isoDate);
+    const diffMs = d.getTime() - new Date().getTime();
+    if (diffMs <= 0) return "due now";
+    const diffMin = Math.ceil(diffMs / 60000);
+    if (diffMin < 60) return `in ${diffMin}m`;
+    const diffHrs = Math.ceil(diffMin / 60);
+    if (diffHrs < 24) return `in ${diffHrs}h`;
+    return d.toLocaleDateString();
+  };
+
   return (
     <GlassPanel>
       <div className="flex items-center justify-between mb-4">
@@ -153,17 +199,6 @@ export function TagManager({ tags }: TagManagerProps) {
           <span className="text-xs text-hud-text-muted">({tags.length})</span>
         </div>
         <div className="flex items-center gap-2">
-          <HudButton
-            size="sm"
-            variant="secondary"
-            onClick={() => autoTag.mutate()}
-            disabled={autoTag.isPending || autoTagStatus?.status === "running" || tags.length === 0}
-          >
-            {(autoTag.isPending || autoTagStatus?.status === "running") ? <LoadingSpinner size="sm" /> : <Sparkles size={12} />}
-            {autoTagStatus?.status === "running"
-              ? `Tagging ${autoTagStatus.processed}/${autoTagStatus.total}...`
-              : autoTag.isPending ? "Starting..." : "Re-tag All"}
-          </HudButton>
           <HudButton
             size="sm"
             onClick={() => {
@@ -177,45 +212,125 @@ export function TagManager({ tags }: TagManagerProps) {
         </div>
       </div>
 
-      {/* Auto-tag status */}
-      {autoTagStatus?.status === "running" && (
-        <div className="mb-3 p-2 bg-hud-accent/10 border border-hud-accent/20 rounded-lg">
-          <div className="flex items-center justify-between mb-1">
-            <p className="text-[10px] text-hud-accent">
-              Tagging emails... {autoTagStatus.processed}/{autoTagStatus.total}
-            </p>
-            <p className="text-[10px] text-hud-text-muted">
-              {autoTagStatus.total > 0 ? `${Math.round((autoTagStatus.processed / autoTagStatus.total) * 100)}%` : ""}
-            </p>
+      {/* Auto-tagging toggle */}
+      <div className="mb-4 p-3 bg-white/3 rounded-lg border border-hud-border">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Sparkles size={14} className={isTaggingEnabled ? "text-hud-success" : "text-hud-text-muted"} />
+            <span className="text-xs font-medium text-hud-text">Auto-Tag (OpenClaw)</span>
           </div>
-          {autoTagStatus.total > 0 && (
-            <div className="h-1 bg-hud-bg-secondary rounded-full overflow-hidden">
+          <div className="flex items-center gap-2">
+            {isTaggingEnabled && (
+              <button
+                onClick={() => runTagging.mutate()}
+                disabled={runTagging.isPending}
+                className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium text-hud-accent bg-hud-accent/10 border border-hud-accent/20 hover:bg-hud-accent/20 transition-colors disabled:opacity-40"
+              >
+                {runTagging.isPending ? <LoadingSpinner size="sm" /> : <Play size={10} />}
+                Run Now
+              </button>
+            )}
+            {/* Toggle switch */}
+            <button
+              onClick={handleToggle}
+              disabled={isToggling || taggingLoading || tags.length === 0}
+              className={`relative w-9 h-5 rounded-full transition-colors duration-200 ${
+                isTaggingEnabled ? "bg-hud-success/60" : "bg-hud-bg-secondary"
+              } border ${
+                isTaggingEnabled ? "border-hud-success/40" : "border-hud-border"
+              } disabled:opacity-40 disabled:cursor-not-allowed`}
+            >
               <div
-                className="h-full bg-hud-accent rounded-full transition-all duration-500"
-                style={{ width: `${(autoTagStatus.processed / autoTagStatus.total) * 100}%` }}
+                className={`absolute top-0.5 w-4 h-4 rounded-full transition-transform duration-200 ${
+                  isTaggingEnabled ? "translate-x-4 bg-hud-success" : "translate-x-0.5 bg-hud-text-muted"
+                }`}
               />
-            </div>
-          )}
-          <p className="text-[9px] text-hud-text-muted mt-1">You can close this page — tagging continues in the background.</p>
+            </button>
+          </div>
         </div>
-      )}
-      {autoTagStatus?.status === "done" && (
-        <div className="mb-3 p-2 bg-hud-success/10 border border-hud-success/20 rounded-lg">
-          <p className="text-[10px] text-hud-success">
-            Auto-tagged {autoTagStatus.processed} of {autoTagStatus.total} emails.
+
+        {/* Status line */}
+        {isTaggingEnabled && taggingStatus && (
+          <div className="mt-2 flex flex-wrap items-center gap-3 text-[10px] text-hud-text-muted">
+            <span className="flex items-center gap-1">
+              <Clock size={10} />
+              Every 30 min
+            </span>
+            <span className={`capitalize ${
+              taggingStatus.mode === "incremental" ? "text-hud-success" : "text-hud-amber"
+            }`}>
+              {taggingStatus.mode}
+            </span>
+            {taggingStatus.lastRunAt && (
+              <span>
+                Last run: {formatLastRun(taggingStatus.lastRunAt)}
+                {taggingStatus.lastRunStatus && (
+                  <span className={`ml-1 ${
+                    taggingStatus.lastRunStatus === "ok" ? "text-hud-success" :
+                    taggingStatus.lastRunStatus === "error" ? "text-hud-error" : "text-hud-text-muted"
+                  }`}>
+                    ({taggingStatus.lastRunStatus})
+                  </span>
+                )}
+              </span>
+            )}
+            {taggingStatus?.scheduler?.nextRunAt && (
+              <span>Next run: {formatNextRun(taggingStatus.scheduler.nextRunAt)}</span>
+            )}
+            {!taggingStatus.lastRunAt && (() => {
+              if (taggingStatus?.scheduler?.health === "unhealthy" && taggingStatus?.scheduler?.message) {
+                return <span className="text-hud-error">{taggingStatus.scheduler.message}</span>;
+              }
+              if (taggingStatus?.scheduler?.health === "delayed" && taggingStatus?.scheduler?.message) {
+                return <span className="text-hud-amber">{taggingStatus.scheduler.message}</span>;
+              }
+              // Detect stale "no run yet" state — if enabled for >5 min with no run, likely failed
+              const enabledAt = taggingStatus.updatedAt ? new Date(taggingStatus.updatedAt).getTime() : 0;
+              const minutesSinceEnabled = enabledAt ? (new Date().getTime() - enabledAt) / 60000 : 0;
+              if (minutesSinceEnabled > 5) {
+                return (
+                  <span className="text-hud-error">
+                    First run may have failed — try Run Now
+                  </span>
+                );
+              }
+              return <span className="text-hud-amber">Backfill starting...</span>;
+            })()}
+            {taggingStatus?.scheduler?.health === "unhealthy" && (
+              <span className="text-hud-error">Scheduler unhealthy</span>
+            )}
+          </div>
+        )}
+
+        {tags.length === 0 && (
+          <p className="mt-2 text-[10px] text-hud-text-muted">
+            Create at least one tag to enable auto-tagging.
           </p>
-        </div>
-      )}
-      {autoTagStatus?.status === "error" && (
-        <div className="mb-3 p-2 bg-hud-error/10 border border-hud-error/20 rounded-lg">
-          <p className="text-[10px] text-hud-error">{autoTagStatus.error || "Auto-tagging failed"}</p>
-        </div>
-      )}
-      {autoTag.isError && !autoTagStatus && (
-        <div className="mb-3 p-2 bg-hud-error/10 border border-hud-error/20 rounded-lg">
-          <p className="text-[10px] text-hud-error">{(autoTag.error as Error).message}</p>
-        </div>
-      )}
+        )}
+
+        {/* Error display */}
+        {(enableTagging.isError || disableTagging.isError || runTagging.isError) && (
+          <p className="mt-2 text-[10px] text-hud-error">
+            {(enableTagging.error as Error)?.message ||
+             (disableTagging.error as Error)?.message ||
+             (runTagging.error as Error)?.message}
+          </p>
+        )}
+        {taggingStatus?.errorMessage && (
+          <p className="mt-1 text-[10px] text-hud-error">{taggingStatus.errorMessage}</p>
+        )}
+        {!taggingStatus?.errorMessage &&
+          taggingStatus?.scheduler?.message &&
+          taggingStatus?.scheduler?.health !== "healthy" && (
+            <p
+              className={`mt-1 text-[10px] ${
+                taggingStatus.scheduler.health === "unhealthy" ? "text-hud-error" : "text-hud-amber"
+              }`}
+            >
+              {taggingStatus.scheduler.message}
+            </p>
+          )}
+      </div>
 
       {/* Form */}
       {showForm && (
