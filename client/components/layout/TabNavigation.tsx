@@ -10,6 +10,7 @@ import {
   Mail,
   FileText,
   MessageSquare,
+  Sparkles,
   Puzzle,
   Workflow,
 } from "lucide-react";
@@ -22,6 +23,7 @@ const tabs = [
   { name: "Email", href: "/dashboard/email", icon: Mail },
   { name: "Documents", href: "/dashboard/documents", icon: FileText },
   { name: "Chat", href: "/dashboard/chat", icon: MessageSquare },
+  { name: "Your everyday AI", href: "/dashboard/everyday-ai", icon: Sparkles },
   { name: "Skills", href: "/dashboard/skills", icon: Puzzle },
   { name: "Workflows", href: "/dashboard/workflows", icon: Workflow },
 ];

@@ -9,5 +9,8 @@ Running notes for agent-driven development on Jarvis3.
 - Admin account created for local testing:
   - username: nick
   - (password shared in Telegram thread)
-- Feature in progress: "Your everyday AI" + "Active research" (feat/everyday-ai branch)
-
+- Completed feature: "Your everyday AI" + "Active research" (feat/everyday-ai branch)
+  - New dashboard tab + route
+  - BYOK chat streaming + memory injection
+  - Provider keys stored encrypted in Prisma with gateway auto-import
+  - Active research gateway route + skill auto-install

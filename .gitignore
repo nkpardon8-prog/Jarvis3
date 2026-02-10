@@ -10,3 +10,4 @@ dist/
 *.log
 .turbo/
 .claude/
+server/data/memory/*.md

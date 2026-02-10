@@ -23,6 +23,7 @@ import driveRoutes from "./routes/drive";
 import composerRoutes from "./routes/composer";
 import automationRoutes from "./routes/automation";
 import gmailProxyRoutes from "./routes/gmail-proxy";
+import everydayAiRoutes from "./routes/everyday-ai";
 import { gateway } from "./gateway/connection";
 import { backfillAllConnectedUsers } from "./services/openclaw-google-proxy.service";
 import { setupSocketIO } from "./socket";
@@ -71,6 +72,7 @@ app.use("/api/gateway", gatewayRoutes);
 app.use("/api/integrations", integrationsRoutes);
 app.use("/api/workflows", workflowsRoutes);
 app.use("/api/drive", driveRoutes);
+app.use("/api/everyday-ai", everydayAiRoutes);
 
 app.use("/api/automation", automationRoutes);
 app.use("/api/gmail-proxy", gmailProxyRoutes);

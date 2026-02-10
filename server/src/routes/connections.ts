@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import { authMiddleware } from "../middleware/auth";
 import { AuthRequest } from "../types";
 import { gateway } from "../gateway/connection";
+import { setProviderKey, isEverydayProvider } from "../services/provider-keys.service";
 
 const router = Router();
 
@@ -297,6 +298,16 @@ router.post("/store-credential", async (req: AuthRequest, res: Response) => {
       });
     } catch {
       // Config fallback is non-critical
+    }
+
+    // Store encrypted key in DB for per-user access
+    try {
+      const userId = req.user?.userId;
+      if (userId && isEverydayProvider(provider)) {
+        await setProviderKey(userId, provider, apiKey);
+      }
+    } catch {
+      // Non-critical for gateway config workflow
     }
 
     res.json({ ok: true, data: { saved: true, envVar } });
