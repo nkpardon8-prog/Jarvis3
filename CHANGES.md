@@ -4,6 +4,131 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-10 — Fix "invalid config" error: migrate workflow storage from gateway config to Prisma DB
+
+**Author:** Nick (via Claude Code)
+**Commit:** `3508346` — fix: migrate workflow storage from gateway config to Prisma DB — fixes "invalid config" error
+**Branch:** main
+
+**What changed:**
+- **schema.prisma — Added `Workflow` model**: New Prisma model to store workflow metadata (id, userId, templateId, name, status, schedule, cronJobId, cronJobName, installedSkills, storedCredentials, generatedPrompt, errorMessage, timestamps). Added `workflows Workflow[]` relation on User model. Replaces the previous approach of storing workflows in gateway config at `config.jarvis.workflows[]`.
+- **workflows.ts — Complete migration of all CRUD endpoints to Prisma**: Rewrote all workflow endpoints (GET list, POST create template, POST create custom, PUT update, PATCH toggle, DELETE, POST run, GET history) to use `prisma.workflow.findMany/findFirst/create/update/delete` instead of `config.get`/`patchConfig`/`WorkflowInstance` type. Removed the `patchConfig` helper and `WorkflowInstance` type entirely. Added `serializeWorkflow()` helper to convert Prisma rows (with JSON string fields) to API response shape.
+- **workflows.ts — Fixed `getWorkflowPrompt` function**: Updated type signature to accept either a Prisma row or serialized object instead of the removed `WorkflowInstance` type.
+- **workflows.ts — Fixed templates endpoint**: Removed `storedEnvKeys` lookup from gateway config (which was being rejected). Credential `alreadyStored` is now always `false`.
+- **workflows.ts — All endpoints now scoped by userId**: Every Prisma query includes `where: { userId }` for multi-user data isolation.
+- **CLAUDE.md — Updated documentation**: Documented gateway config restrictions (`additionalProperties: false`), corrected namespace conventions, updated workflow storage location to Prisma, added Workflow and SavedAgenda to DB model list.
+
+**Why:**
+- The gateway config uses strict schema validation with `additionalProperties: false`. Only specific top-level keys are allowed (`meta`, `wizard`, `agents`, `messages`, `commands`, `channels`, `gateway`, `skills`, `plugins`). The `jarvis` key and `storedEnvKeys` key were both rejected, causing every workflow creation to fail with "invalid config". Moving to Prisma is architecturally correct per the project's core principle: "user-specific data lives in the local Prisma DB."
+
+**Verified:**
+- All 5 pre-built templates create successfully (github-triage, google-workspace-assistant, notion-curator, social-listening, smart-home-ops)
+- SSE streaming progress works for template creation
+- Pause/Resume toggle, Update schedule, Delete, Force-run, History all work
+- All workflows get valid cronJobIds from gateway
+
+**Files touched:**
+- `server/prisma/schema.prisma` — Added Workflow model + User relation
+- `server/src/routes/workflows.ts` — Complete rewrite of all CRUD operations from gateway config to Prisma DB
+- `CLAUDE.md` — Updated gateway config docs, workflow storage location, DB model list
+- `CHANGES.md` — Added this entry
+
+---
+
+## 2026-02-10 — Fix workflow creation hang: SSE streaming progress + cron.add direct
+
+**Author:** Nick (via Claude Code)
+**Commit:** `e8391d9` — fix: workflow creation no longer hangs — SSE streaming progress, direct cron.add, reduced timeouts
+**Branch:** main
+
+**What changed:**
+- **workflows.ts — SSE streaming progress for POST /workflows and POST /workflows/custom**: Both endpoints now support `Accept: text/event-stream` to stream real-time progress events. Each step (skills, credentials, analyze, cron, verify) sends an SSE event when it starts and completes.
+- **workflows.ts — Removed agentExec fallback for cron creation**: Verified `cron.add` gateway method works (<1s). Removed the 30-60s `agentExec` fallback path that was the primary cause of hangs.
+- **workflows.ts — Reduced timeouts**: Credential storage 30s (was 60s), analysis 90s (was 120s), failures non-blocking.
+- **api.ts — Added `postWithProgress` SSE method**: New `api.postWithProgress()` with 3-minute AbortController timeout and graceful fallback.
+- **WorkflowSetupModal.tsx — Real-time progress from server**: SSE-driven progress updates replace fake timed animations.
+- **CustomWorkflowBuilder.tsx — Real-time progress from server**: Same SSE-driven progress.
+
+**Why:**
+- Workflow creation was hanging because the client showed fake progress while a single blocking API call did ALL work server-side. The `agentExec` fallback for cron creation was unnecessary — `cron.add` works in <1 second.
+
+**Files touched:**
+- `server/src/routes/workflows.ts` — SSE streaming, removed agentExec cron fallbacks, reduced timeouts
+- `client/lib/api.ts` — Added `postWithProgress` SSE method
+- `client/components/workflows/WorkflowSetupModal.tsx` — SSE-driven progress
+- `client/components/workflows/CustomWorkflowBuilder.tsx` — SSE-driven progress
+
+---
+
+## 2026-02-10 — Fix infinite re-render loop: memoize Context Provider values
+
+**Author:** Nick (via Claude Code)
+**Commit:** `875b956` — fix: memoize AuthContext and SocketContext provider values to stop infinite re-renders
+**Branch:** main
+
+**What changed:**
+- **AuthContext.tsx** — Wrapped provider value in `useMemo` to prevent new object reference every render
+- **SocketContext.tsx** — Same `useMemo` fix for `{ socket, connected }`
+
+**Why:**
+- Root cause of UI freeze. Without `useMemo`, every render created a new provider value object, forcing all consumers to re-render in an infinite loop.
+
+**Files touched:**
+- `client/lib/contexts/AuthContext.tsx` — Added `useMemo`
+- `client/lib/contexts/SocketContext.tsx` — Added `useMemo`
+
+---
+
+## 2026-02-10 — Stabilize chat polling, throttle scroll, break effect cascades
+
+**Author:** Nick (via Claude Code)
+**Commit:** `b881be3` — fix: stabilize chat polling, throttle scroll, break effect cascades
+**Branch:** main
+
+**What changed:**
+- Stabilized chat polling and scroll behavior, broke infinite effect cascades
+
+**Files touched:**
+- Various chat components
+
+---
+
+## 2026-02-10 — Agenda mark-complete with persistence and firework animation
+
+**Author:** Nick (via Claude Code)
+**Commit:** `cc058a8` — feat: agenda mark-complete with persistence and sci-fi firework animation
+**Branch:** main
+
+**What changed:**
+- Added mark-complete functionality for AI agenda items with persistent state
+- Added sci-fi firework particle animation on completion
+
+**Files touched:**
+- `client/components/calendar/AIAgenda.tsx`
+- `server/src/routes/calendar.ts`
+- `server/prisma/schema.prisma`
+
+---
+
+## 2026-02-10 — AI agenda persistence with Today/Tomorrow toggle
+
+**Author:** Nick (via Claude Code)
+**Commit:** `ec78eb6` — feat: AI agenda persistence with Today/Tomorrow toggle and auto-load
+**Branch:** main
+
+**What changed:**
+- Added SavedAgenda Prisma model for persisting generated agendas
+- Today/Tomorrow pill toggle in AI Agenda panel
+- Auto-load saved agendas on tab open
+- "Generated at" timestamp indicator
+
+**Files touched:**
+- `server/prisma/schema.prisma` — Added SavedAgenda model
+- `server/src/routes/calendar.ts` — GET /agenda, modified POST /build-agenda to persist
+- `client/components/calendar/AIAgenda.tsx` — Toggle, auto-load, timestamp
+
+---
+
 ## 2026-02-09 — Root-cause fix: tagging cron auth failure, token rotation desync, stuck UI
 
 **Author:** Omid (via Claude Code)
