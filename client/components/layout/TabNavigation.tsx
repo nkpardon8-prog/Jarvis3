@@ -11,6 +11,7 @@ import {
   FileText,
   MessageSquare,
   Puzzle,
+  Workflow,
 } from "lucide-react";
 
 const tabs = [
@@ -22,6 +23,7 @@ const tabs = [
   { name: "Documents", href: "/dashboard/documents", icon: FileText },
   { name: "Chat", href: "/dashboard/chat", icon: MessageSquare },
   { name: "Skills", href: "/dashboard/skills", icon: Puzzle },
+  { name: "Workflows", href: "/dashboard/workflows", icon: Workflow },
 ];
 
 export function TabNavigation() {

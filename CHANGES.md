@@ -4,6 +4,43 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-09 — Workflows tab with pre-built templates + AI-powered custom workflow builder
+
+**Author:** Nick (via Claude Code)
+**Commit:** feat: add Workflows tab with 5 pre-built templates, custom workflow builder, visual cron scheduler
+**Branch:** main
+
+**What changed:**
+- **Workflows tab** — New dashboard tab at `/dashboard/workflows` with full CRUD for automation workflows. Added tab to `TabNavigation.tsx` and mounted route in `server/src/index.ts`.
+- **5 pre-built workflow templates** — GitHub Triage, Google Workspace Assistant, Notion Curator, Social Listening Digest, Smart Home Ops. Each has a full system prompt with role identity, step-by-step instructions, auth details, error handling, and `{{ADDITIONAL_INSTRUCTIONS}}` placeholder. Templates defined in both `workflowTemplates.ts` (client) and `workflows.ts` (server).
+- **Server: 10 REST endpoints** — GET `/` (list with live cron status), GET `/templates`, POST `/` (activate pre-built), POST `/custom` (AI-powered custom), POST `/custom/suggest` (connection suggestions), PUT `/:id`, PATCH `/:id/toggle`, DELETE `/:id`, POST `/:id/run`, GET `/:id/history`. All use `patchConfig`/`agentExec` patterns, `cron.add`/`cron.remove`/`cron.list` gateway methods, with `agentExec` fallback.
+- **Custom Workflow Builder** — 4-step wizard (describe → credentials → schedule → progress). Sends description to agent for JSON analysis returning system prompt, suggested skills, skills to create, and suggested connections. Auto-installs ClawHub skills via `skills.install`. Auto-creates custom skills by writing SKILL.md files via `agentExec`. AI-powered connection suggestions via `/custom/suggest` when no credentials provided. Quick schedule presets grid + full visual SchedulePicker.
+- **SchedulePicker** — Visual calendar-style cron scheduler with 5 frequency tabs (Repeating, Daily, Weekly, Monthly, Advanced). Clickable time slots (6 AM–11 PM with sun/moon icons), day-of-week toggle buttons with Weekdays/Every day shortcuts, day-of-month grid (1–28), raw cron expression input with examples, timezone dropdown, and human-readable schedule summary.
+- **WorkflowSetupModal** — Multi-step modal for pre-built templates: template selection grid → configuration (name, credentials with show/hide, SchedulePicker, instructions, trigger) → animated progress. Includes "Build Custom Workflow" card with AI-Powered badge linking to the custom builder.
+- **WorkflowCard** — Per-template color theming, status badges (active/paused/error/setting-up), schedule display, installed skills badges, last run time, pause/resume/run/delete actions.
+- **WorkflowsPage** — Search filter, active/paused/total count badges, "Build Custom" (amber) + "Add Workflow" (cyan) buttons, empty state with dual entry points.
+- **Workflow metadata** stored at `config.jarvis.workflows[]` via gateway `config.patch`. Cron job naming pattern: `jarvis-wf-{templateId}-{shortUuid}`.
+
+**Why:**
+- Users needed a way to set up recurring automated tasks (GitHub triage, email briefings, Notion organization, social monitoring, smart home ops) without manually writing cron configs or system prompts. The pre-built templates provide instant plug-and-play automation. The custom builder lets anyone describe an automation in plain English and have the system generate everything needed — prompt, skills, credentials, schedule — automatically.
+
+**Files touched:**
+- `server/src/routes/workflows.ts` — NEW: 10 endpoints, 5 template definitions, `patchConfig`/`agentExec` helpers, cron scheduling
+- `server/src/index.ts` — MODIFIED: import + mount `workflowsRoutes` at `/api/workflows`
+- `client/app/dashboard/workflows/page.tsx` — NEW: Next.js page wrapper
+- `client/components/workflows/WorkflowsPage.tsx` — NEW: main page with search, grid, modals
+- `client/components/workflows/WorkflowCard.tsx` — NEW: active workflow display card
+- `client/components/workflows/WorkflowSetupModal.tsx` — NEW: multi-step pre-built template setup
+- `client/components/workflows/CustomWorkflowBuilder.tsx` — NEW: 4-step AI-powered custom wizard
+- `client/components/workflows/WorkflowTemplateCard.tsx` — NEW: template selection card
+- `client/components/workflows/SchedulePicker.tsx` — NEW: visual calendar cron scheduler
+- `client/components/workflows/CronExpressionInput.tsx` — NEW: raw cron input with preview
+- `client/components/workflows/workflowTemplates.ts` — NEW: template types, definitions, helpers
+- `client/components/layout/TabNavigation.tsx` — MODIFIED: added Workflows tab with Workflow icon
+- `CLAUDE.md` — MODIFIED: added Workflows section, updated architecture tree, route map, client pages, config namespace
+
+---
+
 ## 2026-02-09 — Reliable OpenClaw Google proxy provisioning with status tracking, backfill, and UI
 
 **Author:** Omid (via Claude Code)

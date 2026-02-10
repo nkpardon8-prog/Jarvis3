@@ -18,6 +18,7 @@ import crmRoutes from "./routes/crm";
 import oauthRoutes from "./routes/oauth";
 import gatewayRoutes from "./routes/gateway";
 import integrationsRoutes from "./routes/integrations";
+import workflowsRoutes from "./routes/workflows";
 import driveRoutes from "./routes/drive";
 import composerRoutes from "./routes/composer";
 import automationRoutes from "./routes/automation";
@@ -68,6 +69,7 @@ app.use("/api/crm", crmRoutes);
 app.use("/api/oauth", oauthRoutes);
 app.use("/api/gateway", gatewayRoutes);
 app.use("/api/integrations", integrationsRoutes);
+app.use("/api/workflows", workflowsRoutes);
 app.use("/api/drive", driveRoutes);
 
 app.use("/api/automation", automationRoutes);

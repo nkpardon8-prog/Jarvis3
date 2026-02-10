@@ -30,6 +30,7 @@ jarvis/
 │   │   │   ├── dashboard.ts   Aggregated status
 │   │   │   ├── connections.ts Config, providers, models, credentials (via agentExec)
 │   │   │   ├── integrations.ts Custom API integration builder (6 endpoints)
+│   │   │   ├── workflows.ts   Workflow CRUD, custom builder, cron scheduling (10 endpoints)
 │   │   │   ├── skills.ts      List, install, update, hub search
 │   │   │   ├── todos.ts       CRUD for todos (Prisma)
 │   │   │   ├── calendar.ts    Events (Google/Microsoft), build-agenda
@@ -61,6 +62,15 @@ jarvis/
     │   │   ├── IntegrationCard.tsx    Display card for custom integrations
     │   │   ├── ClawHubSuggestions.tsx  ClawHub recommendation UI
     │   │   └── SkillGuidelinesPanel.tsx Skill writing guidelines reference
+    │   ├── workflows/          Workflows tab (pre-built + custom workflow builder)
+    │   │   ├── WorkflowsPage.tsx         Main page — query, search, grid
+    │   │   ├── WorkflowCard.tsx          Active workflow card with per-template theming
+    │   │   ├── WorkflowSetupModal.tsx    Multi-step setup for pre-built templates
+    │   │   ├── CustomWorkflowBuilder.tsx AI-powered custom workflow wizard (4 steps)
+    │   │   ├── WorkflowTemplateCard.tsx  Template selection card
+    │   │   ├── SchedulePicker.tsx        Visual calendar-style cron scheduler
+    │   │   ├── CronExpressionInput.tsx   Raw cron expression input with preview
+    │   │   └── workflowTemplates.ts      5 static template definitions + types + helpers
     │   ├── chat/              Chat interface components
     │   ├── ui/                Shared UI components (GlassPanel, HudButton, etc.)
     │   └── ...                Other feature components
@@ -182,6 +192,7 @@ async function agentExec(prompt: string, timeoutMs = 60000) {
 config.models.providers.<provider>.apiKey    — LLM provider API keys (redundant store)
 config.storedEnvKeys.<ENV_VAR_NAME>          — Boolean flags for configured env vars
 config.customIntegrations[]                  — Custom API integration metadata array
+config.jarvis.workflows[]                    — Workflow instance metadata array
 config.agents.defaults.model.primary         — Active model selection
 ```
 
@@ -213,6 +224,66 @@ The Connections page includes a full Custom API Integration Builder that scaffol
 - **IntegrationCard.tsx**: Display card with status indicator (green/amber/red), auth badge, delete button
 - **ClawHubSuggestions.tsx**: Post-creation recommendations with LLM-ranked results, checkbox multi-select, install buttons
 - **SkillGuidelinesPanel.tsx**: Expandable reference panel with best practices for writing skill instructions
+
+## Workflows
+
+The Workflows tab provides plug-and-play automation packages that combine skill installation, credential entry, cron scheduling, and AI-generated system prompts into a single setup flow. Two modes: **pre-built templates** (5 curated workflows) and **custom builder** (AI-powered, describe-and-go).
+
+### Server: `/api/workflows` (routes/workflows.ts)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/` | List workflows — `config.get` for metadata + `cron.list` for live status |
+| GET | `/templates` | Return static template definitions |
+| POST | `/` | Activate pre-built workflow — install skills, store creds, create cron job |
+| POST | `/custom` | Create custom workflow — AI analysis, skill install/creation, cron job |
+| POST | `/custom/suggest` | AI-powered connection suggestions for custom workflows |
+| PUT | `/:id` | Update workflow — change schedule/instructions, recreate cron job |
+| PATCH | `/:id/toggle` | Pause/resume — `cron.remove` or `cron.add` |
+| DELETE | `/:id` | Deactivate — remove cron job, remove from config |
+| POST | `/:id/run` | Force-run via `cron.run` |
+| GET | `/:id/history` | Execution history via `cron.runs` |
+
+### Scheduling approach
+
+Uses `cron.add` / `cron.remove` / `cron.list` gateway methods directly. Cron operates at the gateway scheduler level independently of AGENTS.md/SOUL.md. Falls back to `agentExec` prompt if `cron.*` methods are unavailable.
+
+### 5 Pre-built templates
+
+| ID | Name | Skills | Credentials |
+|----|------|--------|-------------|
+| `github-triage` | GitHub Issue + PR Triage Agent | github | GITHUB_PAT |
+| `google-workspace-assistant` | Google Workspace Executive Assistant | google-calendar, gmail, google-drive | OAuth (Google) |
+| `notion-curator` | Notion Knowledgebase Curator | notion | NOTION_API_KEY |
+| `social-listening` | Social Listening Digest | slack, web-search | SLACK_WEBHOOK_URL |
+| `smart-home-ops` | Smart Home Ops + Reminders | home-assistant | HOME_ASSISTANT_TOKEN, HOME_ASSISTANT_URL |
+
+Each template includes a full system prompt with role identity, step-by-step instructions, error handling, and `{{ADDITIONAL_INSTRUCTIONS}}` placeholder.
+
+### Custom workflow builder
+
+The AI-powered custom builder (`POST /custom`) works by:
+1. Storing user-provided credentials via `agentExec` to `~/.openclaw/.env`
+2. Sending the workflow description to the agent for JSON analysis (system prompt, suggested skills, skills to create, suggested connections)
+3. Auto-installing ClawHub skills via `skills.install`
+4. Auto-creating custom skills via `agentExec` writing SKILL.md files
+5. Creating the cron job with the generated prompt via `cron.add`
+6. Saving metadata to `config.jarvis.workflows[]`
+
+Falls back to a manually-built prompt if agent JSON parsing fails.
+
+### Workflow instance data (stored at `config.jarvis.workflows[]`)
+
+Fields: `id`, `templateId`, `name`, `status` (setting-up/active/paused/error), `schedule`, `customTrigger`, `additionalInstructions`, `cronJobId`, `cronJobName` (pattern: `jarvis-wf-{templateId}-{shortUuid}`), `installedSkills`, `storedCredentials`, `createdAt`, `updatedAt`, `errorMessage`.
+
+### Client components
+
+- **WorkflowsPage.tsx**: Main page with search, status counts, grid of WorkflowCards, "Add Workflow" + "Build Custom" buttons
+- **WorkflowCard.tsx**: Per-template color theming, status badge, schedule display, pause/resume/run/delete actions
+- **WorkflowSetupModal.tsx**: Multi-step (select → configure → progress) for pre-built templates with credential inputs, SchedulePicker, and progress animation
+- **CustomWorkflowBuilder.tsx**: 4-step wizard (describe → credentials → schedule → progress) with AI-powered connection suggestions, quick schedule presets, visual SchedulePicker, and animated progress
+- **SchedulePicker.tsx**: Visual calendar-style scheduler with Repeating/Daily/Weekly/Monthly/Advanced tabs, clickable time slots, day-of-week buttons, day-of-month grid, timezone selector, and human-readable summary
+- **workflowTemplates.ts**: Static template definitions, types (`WorkflowTemplate`, `WorkflowInstance`), `getTemplate()`, `describeSchedule()` helpers
 
 ## Database (Prisma/SQLite)
 
@@ -377,6 +448,7 @@ Three trigger points ensure existing users get provisioned:
 | `/api/dashboard` | routes/dashboard.ts | Aggregated status |
 | `/api/connections` | routes/connections.ts | Config, providers, models, credentials (via gateway) |
 | `/api/integrations` | routes/integrations.ts | Custom API integration CRUD, ClawHub suggestions |
+| `/api/workflows` | routes/workflows.ts | Workflow CRUD, custom builder, cron scheduling, templates |
 | `/api/skills` | routes/skills.ts | List, install, update, hub search |
 | `/api/todos` | routes/todos.ts | CRUD for todos |
 | `/api/calendar` | routes/calendar.ts | Events (Google/Microsoft), build-agenda |
@@ -423,6 +495,7 @@ UI components: `GlassPanel`, `HudButton` (variants: primary, secondary, danger),
 | `/dashboard/calendar` | CalendarPage + AgendaPanel | Calendar events |
 | `/dashboard/crm` | CrmPage | CRM |
 | `/dashboard/skills` | SkillsPage | Skill marketplace |
+| `/dashboard/workflows` | WorkflowsPage | Pre-built + custom workflow automation |
 | `/dashboard/connections` | ConnectionsPage | Gateway, OAuth, providers, services, custom integrations |
 
 ## Environment Variables (server/.env)
