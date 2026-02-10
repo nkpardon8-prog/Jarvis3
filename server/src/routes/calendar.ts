@@ -49,6 +49,15 @@ function formatTime(isoString: string): string {
   });
 }
 
+/** Ensure datetime string has seconds for RFC3339 compliance */
+function normalizeDateTime(dt: string): string {
+  // "2025-01-15T14:00" → "2025-01-15T14:00:00"
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(dt)) {
+    return dt + ":00";
+  }
+  return dt;
+}
+
 function mapGoogleEvent(event: any): CalendarEvent {
   const isAllDay = !!event.start?.date;
   const startStr = event.start?.dateTime || event.start?.date || "";
@@ -102,10 +111,16 @@ async function fetchGoogleCalendarEvents(
     timeMax: end.toISOString(),
     singleEvents: true,
     orderBy: "startTime",
-    maxResults: 100,
+    maxResults: 250,
   });
 
-  return (response.data.items || []).map(mapGoogleEvent);
+  const items = response.data.items || [];
+  console.log("[Calendar] Google API returned", items.length, "raw events for range", start.toISOString(), "→", end.toISOString());
+  items.forEach((e: any) => {
+    console.log("[Calendar]   →", e.summary, "| start:", e.start?.dateTime || e.start?.date, "| id:", e.id);
+  });
+
+  return items.map(mapGoogleEvent);
 }
 
 async function fetchMicrosoftCalendarEvents(
@@ -167,6 +182,7 @@ router.get("/events", async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.userId;
     const { start, end } = req.query;
+    console.log("[Calendar] GET /events — userId:", userId, "start:", start, "end:", end);
 
     const startDate = start ? new Date(String(start)) : startOfDay(new Date());
     const endDate = end ? new Date(String(end)) : addDays(startDate, 7);
@@ -187,6 +203,7 @@ router.get("/events", async (req: AuthRequest, res: Response) => {
     }
 
     const events: CalendarEvent[] = [];
+    const errors: string[] = [];
 
     if (googleTokens) {
       try {
@@ -194,6 +211,7 @@ router.get("/events", async (req: AuthRequest, res: Response) => {
         events.push(...gcalEvents);
       } catch (err: any) {
         console.error("[Calendar] Google fetch error:", err.message);
+        errors.push(`Google: ${err.message}`);
       }
     }
 
@@ -203,10 +221,13 @@ router.get("/events", async (req: AuthRequest, res: Response) => {
         events.push(...msEvents);
       } catch (err: any) {
         console.error("[Calendar] Microsoft fetch error:", err.message);
+        errors.push(`Microsoft: ${err.message}`);
       }
     }
 
     events.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+    console.log("[Calendar] GET /events — returning", events.length, "events, errors:", errors.length,
+      "titles:", events.map(e => `${e.title} (${e.start})`).join(", "));
 
     res.json({
       ok: true,
@@ -214,9 +235,74 @@ router.get("/events", async (req: AuthRequest, res: Response) => {
         connected: true,
         providers: { google: !!googleTokens, microsoft: !!msTokens },
         events,
+        ...(errors.length > 0 && { errors }),
       },
     });
   } catch (err: any) {
+    console.error("[Calendar] GET /events ERROR:", err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── POST /sync — Force sync from providers ─────────────
+
+router.post("/sync", async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const now = new Date();
+    const startDate = new Date(now);
+    startDate.setDate(startDate.getDate() - 10);
+    startDate.setHours(0, 0, 0, 0);
+    const endDate = new Date(now);
+    endDate.setDate(endDate.getDate() + 100);
+    endDate.setHours(23, 59, 59, 999);
+
+    console.log("[Calendar] SYNC requested — userId:", userId, "range:", startDate.toISOString(), "→", endDate.toISOString());
+
+    const googleTokens = await getTokensForProvider(userId, "google");
+    const msTokens = await getTokensForProvider(userId, "microsoft");
+
+    const events: CalendarEvent[] = [];
+    const errors: string[] = [];
+
+    if (googleTokens) {
+      try {
+        const gcalEvents = await fetchGoogleCalendarEvents(userId, googleTokens.accessToken, startDate, endDate);
+        events.push(...gcalEvents);
+        console.log("[Calendar] SYNC — Google returned", gcalEvents.length, "events");
+      } catch (err: any) {
+        console.error("[Calendar] SYNC — Google error:", err.message);
+        errors.push(`Google: ${err.message}`);
+      }
+    }
+
+    if (msTokens) {
+      try {
+        const msEvents = await fetchMicrosoftCalendarEvents(msTokens.accessToken, startDate, endDate);
+        events.push(...msEvents);
+        console.log("[Calendar] SYNC — Microsoft returned", msEvents.length, "events");
+      } catch (err: any) {
+        console.error("[Calendar] SYNC — Microsoft error:", err.message);
+        errors.push(`Microsoft: ${err.message}`);
+      }
+    }
+
+    events.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+
+    console.log("[Calendar] SYNC complete —", events.length, "total events,", errors.length, "errors");
+
+    res.json({
+      ok: true,
+      data: {
+        synced: true,
+        providers: { google: !!googleTokens, microsoft: !!msTokens },
+        eventCount: events.length,
+        events,
+        ...(errors.length > 0 && { errors }),
+      },
+    });
+  } catch (err: any) {
+    console.error("[Calendar] SYNC error:", err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -227,6 +313,7 @@ router.post("/events", async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.userId;
     const { title, description, start, end, allDay, location, timeZone } = req.body;
+    console.log("[Calendar] POST /events — userId:", userId, "title:", title, "start:", start, "end:", end, "allDay:", allDay, "tz:", timeZone);
 
     if (!title || !start) {
       res.status(400).json({ ok: false, error: "title and start are required" });
@@ -249,20 +336,31 @@ router.post("/events", async (req: AuthRequest, res: Response) => {
     };
 
     if (allDay) {
-      eventBody.start = { date: start.split("T")[0] };
-      eventBody.end = { date: (end || start).split("T")[0] };
+      const startDate = start.split("T")[0];
+      let endDate = (end || start).split("T")[0];
+      // Google Calendar API treats end.date as exclusive — add 1 day for single-day events
+      if (endDate <= startDate) {
+        const d = new Date(startDate + "T00:00:00");
+        d.setDate(d.getDate() + 1);
+        endDate = d.toISOString().split("T")[0];
+      }
+      eventBody.start = { date: startDate };
+      eventBody.end = { date: endDate };
     } else {
-      eventBody.start = { dateTime: start, timeZone: tz };
-      eventBody.end = { dateTime: end || start, timeZone: tz };
+      eventBody.start = { dateTime: normalizeDateTime(start), timeZone: tz };
+      eventBody.end = { dateTime: normalizeDateTime(end || start), timeZone: tz };
     }
 
+    console.log("[Calendar] POST /events — inserting into Google Calendar:", JSON.stringify(eventBody));
     const result = await calendar.events.insert({
       calendarId: "primary",
       requestBody: eventBody,
     });
+    console.log("[Calendar] POST /events — SUCCESS — Google event id:", result.data.id, "summary:", result.data.summary, "htmlLink:", result.data.htmlLink);
 
     res.json({ ok: true, data: mapGoogleEvent(result.data) });
   } catch (err: any) {
+    console.error("[Calendar] POST /events ERROR:", err.message, err.stack?.split("\n").slice(0,3).join(" "));
     res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -290,10 +388,31 @@ router.patch("/events/:id", async (req: AuthRequest, res: Response) => {
     if (location !== undefined) patch.location = location;
 
     if (start !== undefined) {
-      patch.start = allDay ? { date: start.split("T")[0] } : { dateTime: start, timeZone: tz };
+      if (allDay) {
+        patch.start = { date: start.split("T")[0] };
+      } else {
+        patch.start = { dateTime: normalizeDateTime(start), timeZone: tz };
+      }
     }
     if (end !== undefined) {
-      patch.end = allDay ? { date: end.split("T")[0] } : { dateTime: end, timeZone: tz };
+      if (allDay) {
+        const endDate = end.split("T")[0];
+        // If start is also provided and end <= start, bump end by 1 day
+        if (start !== undefined) {
+          const startDate = start.split("T")[0];
+          if (endDate <= startDate) {
+            const d = new Date(startDate + "T00:00:00");
+            d.setDate(d.getDate() + 1);
+            patch.end = { date: d.toISOString().split("T")[0] };
+          } else {
+            patch.end = { date: endDate };
+          }
+        } else {
+          patch.end = { date: endDate };
+        }
+      } else {
+        patch.end = { dateTime: normalizeDateTime(end), timeZone: tz };
+      }
     }
 
     const result = await calendar.events.patch({

@@ -62,13 +62,20 @@ export function EventModal({ event, defaultStart, defaultEnd, onClose }: EventMo
       const body: any = { title, start, end: end || start, allDay, timeZone };
       if (location) body.location = location;
       if (description) body.description = description;
+      console.log("[EventModal] Creating event:", JSON.stringify(body));
       const res = await api.post("/calendar/events", body);
+      console.log("[EventModal] Create response:", JSON.stringify(res));
       if (!res.ok) throw new Error(res.error || "Failed to create event");
       return res.data;
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
+      console.log("[EventModal] Event created successfully:", data);
       queryClient.invalidateQueries({ queryKey: ["calendar-events"] });
       onClose();
+    },
+    onError: (err: any) => {
+      console.error("[EventModal] Create event ERROR:", err);
+      alert("Failed to create event: " + (err?.message || String(err)));
     },
   });
 
@@ -101,10 +108,15 @@ export function EventModal({ event, defaultStart, defaultEnd, onClose }: EventMo
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim() || !start) return;
+    console.log("[EventModal] handleSubmit — title:", title, "start:", start, "isEdit:", isEdit);
+    if (!title.trim() || !start) {
+      console.warn("[EventModal] handleSubmit blocked — title empty:", !title.trim(), "start empty:", !start);
+      return;
+    }
     if (isEdit) {
       updateEvent.mutate();
     } else {
+      console.log("[EventModal] Calling createEvent.mutate()");
       createEvent.mutate();
     }
   };

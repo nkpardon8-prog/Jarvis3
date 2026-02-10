@@ -4,6 +4,119 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-10 — Calendar 2-way sync, Sync button, error banners, debug logging, EmailList hydration fix
+
+**Author:** Nick (via Claude Code)
+**Commit:** feat: calendar 2-way sync with Sync button, error banners, and debug logging
+**Branch:** main
+
+**What changed:**
+- **Sync button with status banner**: Sync button triggers POST `/sync` (10 days past, 100 days future), then refetches the current view. A green success banner shows "Synced N events from Google. Showing M in current view." for 5 seconds. Error banner shows failures for 8 seconds.
+- **POST `/calendar/sync` endpoint**: Fetches all events from connected providers over wide date range, returns event count and events.
+- **Calendar error surfacing**: GET `/events` now collects per-provider errors and returns them in an `errors` array. CalendarView renders an amber warning banner when provider errors occur.
+- **Date-only timezone fix**: `parseEventDate()` helper parses `"2026-02-09"` as local midnight instead of UTC (which shifted dates backwards in western timezones). Applied to all 9 date parsing sites across MonthView, WeekView, DayView.
+- **WeekView all-day events row**: Added "ALL DAY" row between header and time slots to display all-day events (previously filtered out with no fallback).
+- **All-day end date fix**: Google Calendar API treats `end.date` as exclusive — single-day all-day events now add 1 day to the end date in both POST and PATCH.
+- **RFC3339 normalization**: `normalizeDateTime()` appends `:00` seconds to datetime strings like `"2025-01-15T14:00"` for Google API compliance.
+- **Debug logging**: Verbose server logs for GET `/events`, POST `/events`, POST `/sync`, and Google API responses (event titles, IDs, ranges). Client-side console logging in CalendarView query and EventModal mutations.
+- **EventModal error feedback**: `onError` handler shows `alert()` on creation failure. Console logging for submit flow.
+- **EmailList hydration fix**: Moved tag buttons outside the parent `<button>` element to fix React nested-button hydration error. Tag controls now use absolute positioning.
+- **maxResults bumped**: Google Calendar API `maxResults` increased from 100 to 250.
+
+**Why:**
+- Events created from Jarvis were going to Google Calendar but the UI wasn't displaying them reliably. Multiple bugs conspired: timezone parsing shifted all-day events to wrong days, WeekView had no all-day rendering path, datetime format lacked required seconds, and error responses were silently swallowed. The Sync button gives users manual control over syncing with visual confirmation.
+- EmailList had a React hydration error from nesting `<button>` inside `<button>`.
+
+**Files touched:**
+- `server/src/routes/calendar.ts` — MODIFIED: added normalizeDateTime, POST `/sync`, error collection, all-day end-date fix, verbose logging, maxResults 250
+- `client/components/calendar/CalendarView.tsx` — MODIFIED: added parseEventDate, Sync button + handler, sync status banner, error banner, all-day WeekView row, query logging
+- `client/components/calendar/EventModal.tsx` — MODIFIED: added onError alert, console logging in mutation and submit
+- `client/components/email/EmailList.tsx` — MODIFIED: moved tag buttons outside parent button, absolute positioning
+
+---
+
+## 2026-02-09 — Add Calendar Sync button + server-side sync endpoint
+
+**Author:** Nick (via Claude Code)
+**Commit:** feat: add calendar Sync button with POST /sync endpoint
+**Branch:** main
+
+**What changed:**
+- **Sync button**: Added a "Sync" button with rotating `RefreshCw` icon in the CalendarView controls bar, next to "New Event". Triggers a server-side sync covering 10 days past through 100 days future.
+- **POST `/calendar/sync` endpoint**: New server endpoint that fetches events from all connected providers (Google/Microsoft) over a wide date range (-10d to +100d) with detailed console logging. Returns event count, events array, and any provider errors.
+- **Query invalidation**: After sync completes, all `calendar-events` React Query cache entries are invalidated, forcing a fresh refetch for the current view range.
+
+**Why:**
+- Users needed a way to manually force-sync between Jarvis and Google Calendar. The 5-minute auto-refetch interval was too slow to confirm that events created from either side were syncing properly. The Sync button gives immediate feedback.
+
+**Files touched:**
+- `server/src/routes/calendar.ts` — MODIFIED: added POST `/sync` route with wide-range fetch and logging
+- `client/components/calendar/CalendarView.tsx` — MODIFIED: added `RefreshCw` import, `useQueryClient`, sync state, `handleSync` handler, Sync button in controls bar
+
+---
+
+## 2026-02-09 — Fix all-day events invisible in WeekView + timezone parsing bug
+
+**Author:** Nick (via Claude Code)
+**Commit:** fix: calendar WeekView all-day events row + date-only timezone parsing
+**Branch:** main
+
+**What changed:**
+- **WeekView all-day events row**: Added a dedicated "ALL DAY" row at the top of the WeekView grid (below the header) to display all-day events. Previously, WeekView filtered out all-day events entirely (`if (e.allDay) return false`) with no fallback display — they were invisible in week view.
+- **Date-only timezone parsing fix**: Added `parseEventDate()` helper that parses date-only strings (e.g., `"2026-02-09"`) as local midnight instead of UTC midnight. `new Date("2026-02-09")` interprets as UTC, which shifts the date backwards in western timezones (e.g., becomes Feb 8 at 5 PM MST). This caused all-day events to appear on the wrong day or not appear at all in all three views (Month, Week, Day).
+- Replaced all `new Date(e.start)` / `new Date(evt.start)` / `new Date(evt.end)` calls in CalendarView.tsx with `parseEventDate()` (9 occurrences across MonthView, WeekView, and DayView).
+
+**Why:**
+- All-day events were completely invisible in WeekView (no rendering path existed for them).
+- All-day events appeared on the wrong calendar day for users in non-UTC timezones due to JavaScript's date-only string parsing behavior. Since most of the user's test events were all-day events, the calendar appeared completely empty.
+
+**Files touched:**
+- `client/components/calendar/CalendarView.tsx` — MODIFIED: added `parseEventDate()` helper, all-day events row in WeekView, replaced all date parsing with timezone-safe version
+
+---
+
+## 2026-02-09 — Fix calendar sync: datetime normalization, all-day events, error surfacing
+
+**Author:** Nick (via Claude Code)
+**Commit:** fix: calendar sync — normalize datetimes, fix all-day end date, surface API errors
+**Branch:** main
+
+**What changed:**
+- **Root cause identified**: Google Calendar API was not enabled in the Google Cloud Console project. Server logs showed `Google Calendar API has not been used in project 353672274843 before or it is disabled`. User enabled the API.
+- **Datetime normalization**: Added `normalizeDateTime()` helper to append `:00` seconds to `datetime-local` values (e.g., `2025-01-15T14:00` → `2025-01-15T14:00:00`) for RFC3339 compliance. Applied to POST and PATCH event routes.
+- **All-day event end date fix**: Google Calendar API treats `end.date` as exclusive. Single-day all-day events need end = start + 1 day. Fixed in both POST and PATCH routes to auto-bump end date when it equals or precedes start.
+- **Error surfacing**: GET `/events` now collects fetch errors into an `errors[]` array and includes them in the response alongside events, instead of silently swallowing them.
+- **Error banner in UI**: CalendarView.tsx now displays an amber warning banner when calendar sync errors are returned, showing the actual error message (e.g., "Enable the Calendar API") instead of a silent empty calendar.
+
+**Why:**
+- Calendar events were not syncing between Jarvis and Google Calendar. The primary blocker was the API not being enabled. Additional code bugs (datetime format, all-day end date, silent errors) would have caused issues even after the API was enabled.
+
+**Files touched:**
+- `server/src/routes/calendar.ts` — MODIFIED: added `normalizeDateTime()` helper, fixed all-day end date off-by-one in POST and PATCH, added error collection in GET `/events`
+- `client/components/calendar/CalendarView.tsx` — MODIFIED: added `AlertTriangle` import, `calendarErrors` extraction, amber error banner
+
+---
+
+## 2026-02-09 — Fix nested button hydration error in EmailList
+
+**Author:** Nick (via Claude Code)
+**Commit:** fix: resolve nested button hydration error in EmailList
+**Branch:** main
+
+**What changed:**
+- Restructured `EmailList.tsx` to move tag controls (tag badge button and "Add tag" icon button) from inside the outer email row `<button>` to an absolutely-positioned sibling `<div>`. This eliminates the HTML spec violation where a `<button>` was nested inside another `<button>`, which caused React hydration errors in Next.js.
+- Changed outer button padding from `px-3` to `pl-3 pr-12` to reserve space for the absolutely-positioned tag controls overlay.
+- Upgraded the tag badge from a `<span onClick>` to a proper `<button type="button">` for correct semantics and accessibility.
+- Simplified the snippet area by removing the flex wrapper div (no longer needed with tag controls extracted).
+
+**Why:**
+- The nested `<button>` elements violated HTML spec and caused Next.js hydration mismatch errors on the Email page. The `<span onClick>` for the tag badge was also semantically incorrect and inaccessible.
+
+**Files touched:**
+- `client/components/email/EmailList.tsx` — MODIFIED: restructured tag controls as absolutely-positioned sibling, fixed button nesting and accessibility
+
+---
+
 ## 2026-02-09 — Workflows tab with pre-built templates + AI-powered custom workflow builder
 
 **Author:** Nick (via Claude Code)

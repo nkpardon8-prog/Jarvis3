@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo, useCallback } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
@@ -12,6 +12,8 @@ import {
   Plus,
   Clock,
   MapPin,
+  AlertTriangle,
+  RefreshCw,
 } from "lucide-react";
 
 interface CalendarEvent {
@@ -57,6 +59,19 @@ function isSameDay(a: Date, b: Date): boolean {
     a.getMonth() === b.getMonth() &&
     a.getDate() === b.getDate()
   );
+}
+
+/**
+ * Parse event date string safely. Date-only strings like "2026-02-09"
+ * are parsed as local midnight instead of UTC (which would shift the day
+ * backwards in western timezones).
+ */
+function parseEventDate(s: string): Date {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const [y, m, d] = s.split("-").map(Number);
+    return new Date(y, m - 1, d);
+  }
+  return new Date(s);
 }
 
 function formatDate(d: Date): string {
@@ -113,12 +128,18 @@ export function CalendarView() {
     return { rangeStart: calStart, rangeEnd: calEnd };
   }, [viewMode, currentDate]);
 
-  const { data, isLoading } = useQuery({
+  const queryClient = useQueryClient();
+  const [syncing, setSyncing] = useState(false);
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
+
+  const { data, isLoading, refetch } = useQuery({
     queryKey: ["calendar-events", rangeStart.toISOString(), rangeEnd.toISOString()],
     queryFn: async () => {
+      console.log("[Calendar] Fetching events:", rangeStart.toISOString(), "→", rangeEnd.toISOString());
       const res = await api.get<any>(
         `/calendar/events?start=${rangeStart.toISOString()}&end=${rangeEnd.toISOString()}`
       );
+      console.log("[Calendar] Fetch result:", res.ok, "events:", res.data?.events?.length, "connected:", res.data?.connected);
       if (!res.ok) throw new Error(res.error || "Failed to load events");
       return res.data;
     },
@@ -128,6 +149,30 @@ export function CalendarView() {
 
   const connected = data?.connected || false;
   const events: CalendarEvent[] = data?.events || [];
+  const calendarErrors: string[] = data?.errors || [];
+
+  const handleSync = useCallback(async () => {
+    setSyncing(true);
+    setSyncMessage(null);
+    try {
+      // Force refetch from Google/Microsoft (10 days past, 100 days future)
+      const syncRes = await api.post<any>("/calendar/sync");
+      if (!syncRes.ok) throw new Error(syncRes.error || "Sync failed");
+      console.log("[Calendar] Sync returned", syncRes.data?.eventCount, "events");
+
+      // Also refetch the current view range to update the UI
+      const { data: freshData } = await refetch();
+      const viewCount = freshData?.events?.length ?? 0;
+      setSyncMessage(`Synced ${syncRes.data?.eventCount ?? 0} events from Google. Showing ${viewCount} in current view.`);
+      setTimeout(() => setSyncMessage(null), 5000);
+    } catch (err: any) {
+      console.error("[Calendar] Sync error:", err);
+      setSyncMessage(`Sync failed: ${err?.message || String(err)}`);
+      setTimeout(() => setSyncMessage(null), 8000);
+    } finally {
+      setSyncing(false);
+    }
+  }, [refetch]);
 
   const navigate = useCallback(
     (direction: number) => {
@@ -226,14 +271,48 @@ export function CalendarView() {
           </span>
         </div>
 
-        <button
-          onClick={() => openCreate()}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-hud-accent/20 text-hud-accent border border-hud-accent/30 hover:bg-hud-accent/30 transition-colors"
-        >
-          <Plus size={14} />
-          New Event
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleSync}
+            disabled={syncing}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-hud-text-secondary border border-hud-border hover:text-hud-accent hover:border-hud-accent/30 hover:bg-hud-accent/10 transition-colors disabled:opacity-50"
+          >
+            <RefreshCw size={14} className={syncing ? "animate-spin" : ""} />
+            Sync
+          </button>
+          <button
+            onClick={() => openCreate()}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-hud-accent/20 text-hud-accent border border-hud-accent/30 hover:bg-hud-accent/30 transition-colors"
+          >
+            <Plus size={14} />
+            New Event
+          </button>
+        </div>
       </div>
+
+      {/* Sync status message */}
+      {syncMessage && (
+        <div className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-medium ${
+          syncMessage.startsWith("Sync failed")
+            ? "bg-hud-error/10 border border-hud-error/30 text-hud-error"
+            : "bg-hud-success/10 border border-hud-success/30 text-hud-success"
+        }`}>
+          {syncMessage}
+        </div>
+      )}
+
+      {/* Calendar sync error banner */}
+      {calendarErrors.length > 0 && (
+        <div className="flex items-start gap-3 px-4 py-3 rounded-lg bg-hud-amber/10 border border-hud-amber/30">
+          <AlertTriangle size={16} className="text-hud-amber shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-medium text-hud-amber">Calendar sync issue</p>
+            {calendarErrors.map((err, i) => (
+              <p key={i} className="text-xs mt-1 text-hud-text-secondary">{err}</p>
+            ))}
+          </div>
+        </div>
+      )}
 
       {isLoading ? (
         <div className="flex items-center justify-center py-20">
@@ -301,6 +380,12 @@ function WeekView({
   const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
   const today = new Date();
 
+  // Collect all-day events for each day of the week
+  const allDayByDay = days.map((day) =>
+    events.filter((e) => e.allDay && isSameDay(parseEventDate(e.start), day))
+  );
+  const hasAllDay = allDayByDay.some((d) => d.length > 0);
+
   return (
     <GlassPanel className="!p-0 overflow-hidden">
       <div className="overflow-auto max-h-[calc(100vh-220px)]">
@@ -330,6 +415,35 @@ function WeekView({
             );
           })}
 
+          {/* All-day events row */}
+          {hasAllDay && (
+            <>
+              <div className="border-b border-hud-border px-1.5 flex items-center justify-end">
+                <span className="text-[9px] text-hud-text-muted">ALL DAY</span>
+              </div>
+              {days.map((day, di) => (
+                <div
+                  key={`allday-${day.toISOString()}`}
+                  className="border-b border-l border-hud-border px-1 py-1 min-h-[28px]"
+                >
+                  {allDayByDay[di].map((evt) => (
+                    <div
+                      key={evt.id}
+                      onClick={() => onEventClick(evt)}
+                      className={`text-[9px] px-1.5 py-0.5 rounded truncate cursor-pointer mb-0.5 ${
+                        evt.provider === "google"
+                          ? "bg-hud-accent/15 text-hud-accent hover:bg-hud-accent/25"
+                          : "bg-blue-500/15 text-blue-400 hover:bg-blue-500/25"
+                      }`}
+                    >
+                      {evt.title}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </>
+          )}
+
           {/* Time slots */}
           {HOURS.map((hour) => (
             <div key={`row-${hour}`} className="contents">
@@ -345,7 +459,7 @@ function WeekView({
               {days.map((day) => {
                 const dayEvents = events.filter((e) => {
                   if (e.allDay) return false;
-                  const eStart = new Date(e.start);
+                  const eStart = parseEventDate(e.start);
                   return isSameDay(eStart, day) && eStart.getHours() === hour;
                 });
                 const isToday = isSameDay(day, today);
@@ -363,8 +477,8 @@ function WeekView({
                     }}
                   >
                     {dayEvents.map((evt) => {
-                      const eStart = new Date(evt.start);
-                      const eEnd = new Date(evt.end);
+                      const eStart = parseEventDate(evt.start);
+                      const eEnd = parseEventDate(evt.end);
                       const durationHrs = (eEnd.getTime() - eStart.getTime()) / 3600000;
                       const topOffset = (eStart.getMinutes() / 60) * SLOT_HEIGHT;
                       const height = Math.max(20, durationHrs * SLOT_HEIGHT - 2);
@@ -413,7 +527,7 @@ function DayView({
 }) {
   const today = new Date();
   const isToday = isSameDay(currentDate, today);
-  const dayEvents = events.filter((e) => isSameDay(new Date(e.start), currentDate));
+  const dayEvents = events.filter((e) => isSameDay(parseEventDate(e.start), currentDate));
   const allDayEvents = dayEvents.filter((e) => e.allDay);
   const timedEvents = dayEvents.filter((e) => !e.allDay);
 
@@ -442,7 +556,7 @@ function DayView({
         <div className="grid grid-cols-[60px_1fr]">
           {HOURS.map((hour) => {
             const hourEvents = timedEvents.filter(
-              (e) => new Date(e.start).getHours() === hour
+              (e) => parseEventDate(e.start).getHours() === hour
             );
 
             return (
@@ -466,8 +580,8 @@ function DayView({
                   }}
                 >
                   {hourEvents.map((evt) => {
-                    const eStart = new Date(evt.start);
-                    const eEnd = new Date(evt.end);
+                    const eStart = parseEventDate(evt.start);
+                    const eEnd = parseEventDate(evt.end);
                     const durationHrs = (eEnd.getTime() - eStart.getTime()) / 3600000;
                     const topOffset = (eStart.getMinutes() / 60) * SLOT_HEIGHT;
                     const height = Math.max(24, durationHrs * SLOT_HEIGHT - 2);
@@ -545,7 +659,7 @@ function MonthView({
         {days.map((day) => {
           const isCurrentMonth = day.getMonth() === currentDate.getMonth();
           const isToday = isSameDay(day, today);
-          const dayEvts = events.filter((e) => isSameDay(new Date(e.start), day));
+          const dayEvts = events.filter((e) => isSameDay(parseEventDate(e.start), day));
 
           return (
             <div
