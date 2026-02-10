@@ -4,6 +4,23 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-09 — Add inline AI Enhance button to custom workflow builder
+
+**Author:** Omid (via Claude Code)
+**Commit:** feat: inline AI Enhance button in custom workflow description
+**Branch:** oz/email-restructure-automation
+
+**What changed:**
+- Added small "AI Enhance" button inside the workflow description textarea (bottom-right corner) in `CustomWorkflowBuilder.tsx`. Uses `POST /automation/assist` to lightly polish the user's existing text — fixes grammar, adds clarity, keeps same length and tone. Replaces text in-place with no separate suggestion panel.
+
+**Why:**
+- Users writing workflow descriptions benefit from a quick polish without leaving the form. The button is seamless and non-intrusive, matching the pattern used in ComposeTab.
+
+**Files touched:**
+- `client/components/workflows/CustomWorkflowBuilder.tsx` — Added `Sparkles` import, `aiHelp` mutation, inline button + error display
+
+---
+
 ## 2026-02-09 — Workflows tab with pre-built templates + AI-powered custom workflow builder
 
 **Author:** Nick (via Claude Code)

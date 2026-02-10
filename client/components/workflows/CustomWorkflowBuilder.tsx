@@ -27,6 +27,7 @@ import {
   Puzzle,
   ExternalLink,
   Clock,
+  Sparkles,
 } from "lucide-react";
 
 interface CustomWorkflowBuilderProps {
@@ -105,6 +106,20 @@ export function CustomWorkflowBuilder({ onClose }: CustomWorkflowBuilderProps) {
   const [setupDone, setSetupDone] = useState(false);
   const [setupError, setSetupError] = useState("");
   const [resultData, setResultData] = useState<any>(null);
+
+  // AI Help for description
+  const aiHelp = useMutation({
+    mutationFn: async () => {
+      const prompt = `Lightly enhance this workflow description. Clean up the language, fix grammar, and make it slightly more specific — but keep the same length, tone, and intent. Do NOT rewrite it from scratch or make it longer. Just polish what's already there.\n\nWorkflow name: ${workflowName || "(not set yet)"}\nDescription: ${description}\n\nReturn only the enhanced description, nothing else.`;
+      const res = await api.post<{ response: string }>("/automation/assist", { prompt });
+      if (!res.ok) throw new Error(res.error || "AI Help not available. Configure Automation AI in Connections.");
+      return res.data!;
+    },
+    onSuccess: (data) => {
+      const result = typeof data?.response === "string" ? data.response : JSON.stringify(data?.response ?? "");
+      setDescription(result);
+    },
+  });
 
   // Add credential entry
   function addCredential() {
@@ -390,17 +405,32 @@ export function CustomWorkflowBuilder({ onClose }: CustomWorkflowBuilderProps) {
                   <label className="block text-[10px] text-hud-text-muted mb-1.5 uppercase tracking-wider">
                     What should this workflow do?
                   </label>
-                  <textarea
-                    value={description}
-                    onChange={(e) => setDescription(e.target.value)}
-                    placeholder="Describe the automation in plain English. Be specific about what data to read, what actions to take, and what output to produce.&#10;&#10;Example: Every morning, check my Gmail for new invoices, extract the amounts and vendor names, log them to a Google Sheet, and send me a Slack summary."
-                    rows={6}
-                    className="w-full bg-hud-bg-secondary/50 border border-hud-border rounded-lg px-3 py-2 text-sm text-hud-text placeholder:text-hud-text-muted/40 focus:outline-none focus:border-hud-accent/50 transition-colors resize-y"
-                  />
-                  <p className="text-[10px] text-hud-text-muted/60 mt-1 px-1">
-                    The more detail you provide, the better the generated automation
-                    will be.
-                  </p>
+                  <div className="relative">
+                    <textarea
+                      value={description}
+                      onChange={(e) => setDescription(e.target.value)}
+                      placeholder="Describe the automation in plain English. Be specific about what data to read, what actions to take, and what output to produce.&#10;&#10;Example: Every morning, check my Gmail for new invoices, extract the amounts and vendor names, log them to a Google Sheet, and send me a Slack summary."
+                      rows={6}
+                      className="w-full bg-hud-bg-secondary/50 border border-hud-border rounded-lg px-3 py-2 pb-9 text-sm text-hud-text placeholder:text-hud-text-muted/40 focus:outline-none focus:border-hud-accent/50 transition-colors resize-y"
+                    />
+                    <button
+                      onClick={() => aiHelp.mutate()}
+                      disabled={aiHelp.isPending || !description.trim()}
+                      className="absolute bottom-2 right-2 flex items-center gap-1 px-2 py-1 text-[10px] font-medium text-hud-success bg-hud-success/10 border border-hud-success/20 rounded-md hover:bg-hud-success/20 transition-colors disabled:opacity-50"
+                    >
+                      {aiHelp.isPending ? <LoadingSpinner size="sm" /> : <Sparkles size={10} />}
+                      AI Enhance
+                    </button>
+                  </div>
+                  <div className="flex items-center justify-between mt-1 px-1">
+                    <p className="text-[10px] text-hud-text-muted/60">
+                      The more detail you provide, the better the generated automation will be.
+                    </p>
+                    {aiHelp.isError && (
+                      <p className="text-[10px] text-hud-amber">{(aiHelp.error as Error).message}</p>
+                    )}
+                  </div>
+
                 </div>
 
                 {/* Additional Instructions (collapsed by default) */}
