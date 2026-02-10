@@ -8,7 +8,7 @@ import {
   getProviderKey,
   isEverydayProvider,
 } from "../services/provider-keys.service";
-import { readMemory, appendMemory, summarizeForMemory } from "../services/memory.service";
+import { readMemory, appendMemory, summarizeForMemory, writeMemory } from "../services/memory.service";
 import { ensureActiveResearchSkill, buildActiveResearchSystemPrompt } from "../services/active-research.service";
 import { gateway } from "../gateway/connection";
 
@@ -86,7 +86,7 @@ router.post("/chat", async (req: AuthRequest, res: Response) => {
       return;
     }
 
-    const { provider, model, messages, thinkingLevel, deepResearch, stream } = req.body;
+    const { provider, model, messages, thinkingLevel, deepResearch, stream, incognito } = req.body;
     if (!provider || !model || !Array.isArray(messages)) {
       res.status(400).json({ ok: false, error: "provider, model, messages are required" });
       return;
@@ -151,8 +151,10 @@ router.post("/chat", async (req: AuthRequest, res: Response) => {
         });
         sendEvent({ type: "done" });
         res.end();
-        const bullets = summarizeForMemory(fullText);
-        await appendMemory(userId, bullets);
+        if (!incognito) {
+          const bullets = summarizeForMemory(fullText);
+          await appendMemory(userId, bullets);
+        }
       } catch (err: any) {
         sendEvent({ type: "error", error: err.message || "Streaming error" });
         res.end();
@@ -168,9 +170,25 @@ router.post("/chat", async (req: AuthRequest, res: Response) => {
       systemMessage,
       params,
     });
-    const bullets = summarizeForMemory(text);
-    await appendMemory(userId, bullets);
+    if (!incognito) {
+      const bullets = summarizeForMemory(text);
+      await appendMemory(userId, bullets);
+    }
     res.json({ ok: true, data: { message: text } });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post("/memory/clear", async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      res.status(401).json({ ok: false, error: "Unauthorized" });
+      return;
+    }
+    await writeMemory(userId, "");
+    res.json({ ok: true, data: { cleared: true } });
   } catch (err: any) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -193,28 +211,86 @@ router.post("/active-research", async (req: AuthRequest, res: Response) => {
 
     const sessionKey = `agent:research:${userId}`;
     const systemPrompt = buildActiveResearchSystemPrompt();
-    const prompt = `${systemPrompt}\n\nUser request:\n${message}`;
 
-    await gateway.send(
-      "chat.send",
-      {
-        sessionKey,
-        message: prompt,
-        deliver: true,
-        thinking: "low",
-        idempotencyKey: `active-research-${randomUUID()}`,
-      },
-      120000
-    );
+    async function runOnce(extraInstruction?: string): Promise<string> {
+      const requestId = randomUUID();
+      const prompt = `${systemPrompt}` +
+        `\n\nRequest ID: ${requestId}` +
+        (extraInstruction ? `\n\n${extraInstruction}` : "") +
+        `\n\nUser request:\n${message}`;
 
-    const history = (await gateway.send("chat.history", { sessionKey, limit: 20 })) as any;
-    const messages = Array.isArray(history?.messages) ? history.messages : history || [];
-    const lastAssistant = [...messages].reverse().find((msg: any) => msg.role === "assistant");
-    const content = extractTextContent(lastAssistant?.content || "");
+      const result = (await gateway.send(
+        "chat.send",
+        {
+          sessionKey,
+          message: prompt,
+          deliver: true,
+          thinking: "low",
+          idempotencyKey: `active-research-${requestId}`,
+        },
+        120000
+      )) as any;
+
+      // Poll history and return the assistant message that follows the user
+      // message containing our Request ID marker (robust across clock skew).
+      for (let attempt = 0; attempt < 30; attempt++) {
+        const historyPayload = (await gateway.send("chat.history", { sessionKey, limit: 120 })) as any;
+        const messages = normalizeGatewayHistory(historyPayload);
+
+        let userIdx: number | undefined;
+        for (let i = messages.length - 1; i >= 0; i--) {
+          const m: any = messages[i];
+          if (m?.role !== "user") continue;
+          const t = extractTextContent(m?.content || "");
+          if (t.includes(`Request ID: ${requestId}`)) {
+            userIdx = i;
+            break;
+          }
+        }
+
+        if (userIdx !== undefined) {
+          const after = messages.slice(userIdx + 1);
+          const assistantMsg = after.find((m: any) => m?.role === "assistant");
+          const text = extractTextContent(assistantMsg?.content || "");
+          if (text && text.trim()) return text;
+        }
+
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+
+      // Fallback: return empty string and let caller decide whether to retry.
+      return "";
+    }
+
+    let content = await runOnce();
+
+    // Retry once if we got an empty/whitespace response (race or history ordering).
+    if (!content || !content.trim()) {
+      content = await runOnce(
+        "Retry: your previous response may not have been captured. Answer again with citations-first."
+      );
+    }
+
+    // If the agent returned the citations-first failure sentinel, retry once with a stronger directive.
+    if (content?.trim().toLowerCase().includes("no reliable sources found")) {
+      content = await runOnce(
+        "Retry: you must use web_fetch (and if needed browser) to retrieve at least 1-2 sources before answering. Do not return 'No reliable sources found' unless the tools truly fail."
+      );
+    }
 
     res.json({ ok: true, data: { sessionKey, message: content } });
   } catch (err: any) {
-    res.status(500).json({ ok: false, error: err.message });
+    try {
+      const { promises: fs } = await import("fs");
+      const details =
+        `[${new Date().toISOString()}] /everyday-ai/active-research\n` +
+        (err?.stack || err?.message || String(err)) +
+        "\n\n";
+      await fs.appendFile("/tmp/jarvis3-active-research-errors.log", details, "utf8");
+    } catch {}
+
+    console.error("[everyday-ai/active-research] error", err);
+    res.status(500).json({ ok: false, error: err?.message || "Internal server error" });
   }
 });
 
@@ -592,6 +668,17 @@ async function consumeSse(
       idx = buffer.indexOf("\n\n");
     }
   }
+}
+
+function normalizeGatewayHistory(payload: any): any[] {
+  // Gateway methods sometimes return different shapes depending on server version.
+  // Accept: {messages: [...]}, {data:{messages:[...]}}, or directly an array.
+  if (Array.isArray(payload)) return payload;
+  if (payload && typeof payload === "object") {
+    if (Array.isArray(payload.messages)) return payload.messages;
+    if (payload.data && Array.isArray(payload.data.messages)) return payload.data.messages;
+  }
+  return [];
 }
 
 function extractTextContent(content: unknown): string {

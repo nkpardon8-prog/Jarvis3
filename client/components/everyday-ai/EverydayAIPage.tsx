@@ -28,6 +28,7 @@ export function EverydayAIPage() {
   const [modelId, setModelId] = useState("");
   const [thinkingEnabled, setThinkingEnabled] = useState(false);
   const [deepResearchEnabled, setDeepResearchEnabled] = useState(false);
+  const [incognitoEnabled, setIncognitoEnabled] = useState(false);
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ["everyday-ai-models"],
@@ -159,7 +160,7 @@ export function EverydayAIPage() {
                 <label className="text-[11px] text-hud-text-muted uppercase tracking-wide">
                   Advanced options
                 </label>
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-3">
                   <label className="flex items-center gap-2 text-xs text-hud-text-secondary">
                     <input
                       type="checkbox"
@@ -178,6 +179,24 @@ export function EverydayAIPage() {
                     />
                     Deep research
                   </label>
+                  <label className="flex items-center gap-2 text-xs text-hud-text-secondary">
+                    <input
+                      type="checkbox"
+                      checked={incognitoEnabled}
+                      onChange={(e) => setIncognitoEnabled(e.target.checked)}
+                      className="rounded border-hud-border"
+                    />
+                    Incognito (no memory)
+                  </label>
+                  <button
+                    onClick={async () => {
+                      await api.post("/everyday-ai/memory/clear", {});
+                    }}
+                    className="text-[11px] px-2 py-1 rounded border border-hud-border text-hud-text-secondary hover:text-hud-text hover:border-hud-accent/40 transition-colors"
+                    title="Wipe your saved memory for Everyday AI"
+                  >
+                    Clear memory
+                  </button>
                 </div>
               </div>
             </div>
@@ -210,6 +229,7 @@ export function EverydayAIPage() {
                   message: text,
                   thinkingLevel: thinkingEnabled ? "medium" : undefined,
                   deepResearch: deepResearchEnabled,
+                  incognito: incognitoEnabled,
                 })
               }
               onAbort={abortMessage}

@@ -1,6 +1,8 @@
 import { prisma } from "./prisma";
 import { encrypt, decrypt } from "./crypto.service";
 import { gateway } from "../gateway/connection";
+import { randomUUID } from "crypto";
+import { readOpenClawEnvVar } from "./openclaw-env.service";
 
 export type EverydayProviderId =
   | "openai"
@@ -27,7 +29,11 @@ export function isEverydayProvider(provider: string): provider is EverydayProvid
   return PROVIDER_IDS.has(provider as EverydayProviderId);
 }
 
-export async function setProviderKey(userId: string, provider: EverydayProviderId, apiKey: string): Promise<void> {
+export async function setProviderKey(
+  userId: string,
+  provider: EverydayProviderId,
+  apiKey: string
+): Promise<void> {
   const encrypted = encrypt(apiKey);
   await prisma.userProviderKey.upsert({
     where: { userId_provider: { userId, provider } },
@@ -36,7 +42,10 @@ export async function setProviderKey(userId: string, provider: EverydayProviderI
   });
 }
 
-export async function getProviderKey(userId: string, provider: EverydayProviderId): Promise<string | null> {
+export async function getProviderKey(
+  userId: string,
+  provider: EverydayProviderId
+): Promise<string | null> {
   const record = await prisma.userProviderKey.findUnique({
     where: { userId_provider: { userId, provider } },
   });
@@ -44,30 +53,40 @@ export async function getProviderKey(userId: string, provider: EverydayProviderI
     return decrypt(record.apiKey);
   }
 
-  const imported = await importProviderKeyFromGateway(userId, provider);
+  // Import from the OpenClaw host env via gateway (legacy keys saved in Connections)
+  const imported = await importProviderKeyFromEnvViaGateway(userId, provider);
   if (imported) return imported;
+
   return null;
 }
 
-export async function listStoredProviderKeys(userId: string): Promise<Set<EverydayProviderId>> {
+export async function listStoredProviderKeys(
+  userId: string
+): Promise<Set<EverydayProviderId>> {
   const records = await prisma.userProviderKey.findMany({ where: { userId } });
   return new Set(records.map((r) => r.provider as EverydayProviderId));
 }
 
-async function importProviderKeyFromGateway(
+const PROVIDER_TO_ENV_VAR: Record<EverydayProviderId, string> = {
+  openai: "OPENAI_API_KEY",
+  anthropic: "ANTHROPIC_API_KEY",
+  google: "GEMINI_API_KEY",
+  openrouter: "OPENROUTER_API_KEY",
+  xai: "XAI_API_KEY",
+  mistral: "MISTRAL_API_KEY",
+  groq: "GROQ_API_KEY",
+};
+
+async function importProviderKeyFromEnvViaGateway(
   userId: string,
   provider: EverydayProviderId
 ): Promise<string | null> {
-  try {
-    const configResult = (await gateway.send("config.get", {})) as any;
-    const providers = configResult?.config?.models?.providers || {};
-    const apiKey = providers?.[provider]?.apiKey;
-    if (typeof apiKey === "string" && apiKey.trim()) {
-      await setProviderKey(userId, provider, apiKey.trim());
-      return apiKey.trim();
-    }
-  } catch {
-    // Ignore gateway failures; caller will handle missing key.
-  }
-  return null;
+  // NOTE: we read the OpenClaw host env file directly (server-side) for reliability.
+  // This avoids depending on gateway chat streaming semantics.
+  const envVar = PROVIDER_TO_ENV_VAR[provider];
+  const apiKey = (await readOpenClawEnvVar(envVar))?.trim();
+  if (!apiKey) return null;
+
+  await setProviderKey(userId, provider, apiKey);
+  return apiKey;
 }

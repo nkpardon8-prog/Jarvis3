@@ -15,6 +15,7 @@ interface SendEverydayMessagePayload {
   message: string;
   thinkingLevel?: string;
   deepResearch?: boolean;
+  incognito?: boolean;
   endpoint?: string;
 }
 
@@ -64,6 +65,7 @@ export function useEverydayAIChat() {
               thinkingLevel: payload.thinkingLevel,
               deepResearch: payload.deepResearch,
               stream: true,
+              incognito: payload.incognito,
             }
           : { message: payload.message };
 
