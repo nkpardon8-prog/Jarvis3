@@ -58,6 +58,7 @@ interface WorkflowInstance {
   createdAt: string;
   updatedAt: string;
   errorMessage?: string;
+  generatedPrompt?: string;
 }
 
 // ─── Template Definitions ───────────────────────────────
@@ -455,7 +456,7 @@ async function agentExec(
     {
       sessionKey,
       message: prompt,
-      deliver: true,
+      deliver: "full",
       thinking: "low",
       idempotencyKey: `workflow-${Date.now()}-${randomUUID().slice(0, 8)}`,
     },
@@ -506,6 +507,20 @@ function assemblePrompt(
   }
 
   return prompt;
+}
+
+/** Get the agent prompt for any workflow (template or custom) */
+function getWorkflowPrompt(workflow: WorkflowInstance): string | null {
+  // Custom workflow — use stored prompt
+  if (workflow.generatedPrompt) {
+    return workflow.generatedPrompt;
+  }
+  // Template workflow — assemble from template
+  const template = getTemplateById(workflow.templateId);
+  if (template) {
+    return assemblePrompt(template, workflow.additionalInstructions, workflow.customTrigger);
+  }
+  return null;
 }
 
 // ─── GET /api/workflows — List all workflow instances ────
@@ -1110,6 +1125,7 @@ ${additionalInstructions ? `## Additional Instructions\n${additionalInstructions
               cronJobId,
               installedSkills,
               storedCredentials: storedCreds,
+              generatedPrompt: finalPrompt,
               updatedAt: now,
             }
           : w
@@ -1126,6 +1142,7 @@ ${additionalInstructions ? `## Additional Instructions\n${additionalInstructions
           cronJobId,
           installedSkills,
           storedCredentials: storedCreds,
+          generatedPrompt: finalPrompt,
           updatedAt: now,
         },
         generatedPrompt: systemPrompt,
@@ -1224,10 +1241,6 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
     }
 
     const template = getTemplateById(existing.templateId);
-    if (!template) {
-      res.status(500).json({ ok: false, error: "Workflow template not found" });
-      return;
-    }
 
     const updatedSchedule = schedule || existing.schedule;
     const updatedInstructions =
@@ -1239,13 +1252,37 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
 
     // Update credentials if provided
     if (credentials) {
-      for (const field of template.credentialFields) {
-        const value = credentials[field.envVar];
-        if (value) {
-          await agentExec(
-            `Update the file ~/.openclaw/.env: if a line starting with "${field.envVar}=" exists, replace it with "${field.envVar}=${value}". Otherwise, append the line "${field.envVar}=${value}" to the end of the file. Create the file if it does not exist. Do NOT remove or modify any other lines. Confirm when done.`
-          );
+      if (template) {
+        // Template workflow — update template credential fields
+        for (const field of template.credentialFields) {
+          const value = credentials[field.envVar];
+          if (value) {
+            await agentExec(
+              `Update the file ~/.openclaw/.env: if a line starting with "${field.envVar}=" exists, replace it with "${field.envVar}=${value}". Otherwise, append the line "${field.envVar}=${value}" to the end of the file. Create the file if it does not exist. Do NOT remove or modify any other lines. Confirm when done.`
+            );
+          }
         }
+      } else {
+        // Custom workflow — update any provided credential key/value pairs
+        for (const [envVar, value] of Object.entries(credentials)) {
+          if (value && typeof value === "string") {
+            await agentExec(
+              `Update the file ~/.openclaw/.env: if a line starting with "${envVar}=" exists, replace it with "${envVar}=${value}". Otherwise, append the line "${envVar}=${value}" to the end of the file. Create the file if it does not exist. Do NOT remove or modify any other lines. Confirm when done.`
+            );
+          }
+        }
+      }
+    }
+
+    // Build the updated prompt for the workflow
+    let updatedPrompt: string | null = null;
+    if (template) {
+      updatedPrompt = assemblePrompt(template, updatedInstructions, updatedTrigger);
+    } else if (existing.generatedPrompt) {
+      // Custom workflow — use stored prompt, append updated instructions if changed
+      updatedPrompt = existing.generatedPrompt;
+      if (additionalInstructions !== undefined && additionalInstructions !== existing.additionalInstructions) {
+        updatedPrompt = existing.generatedPrompt + "\n\n## Additional Instructions\n" + additionalInstructions;
       }
     }
 
@@ -1262,19 +1299,22 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
         // Old job may not exist
       }
 
-      // Create new cron job
-      const agentPrompt = assemblePrompt(template, updatedInstructions, updatedTrigger);
-      try {
-        const cronResult = (await gateway.send("cron.add", {
-          name: existing.cronJobName,
-          schedule: buildCronSchedule(updatedSchedule),
-          sessionTarget: template.sessionTarget,
-          payload: { kind: "agentTurn", message: agentPrompt },
-        })) as any;
+      // Create new cron job with resolved prompt
+      const agentPrompt = updatedPrompt || getWorkflowPrompt(existing);
+      if (agentPrompt) {
+        const sessionTarget = template?.sessionTarget || "isolated";
+        try {
+          const cronResult = (await gateway.send("cron.add", {
+            name: existing.cronJobName,
+            schedule: buildCronSchedule(updatedSchedule),
+            sessionTarget,
+            payload: { kind: "agentTurn", message: agentPrompt },
+          })) as any;
 
-        existing.cronJobId = cronResult?.id || cronResult?.jobId;
-      } catch (err: any) {
-        console.error(`[Workflows] Failed to recreate cron job: ${err.message}`);
+          existing.cronJobId = cronResult?.id || cronResult?.jobId;
+        } catch (err: any) {
+          console.error(`[Workflows] Failed to recreate cron job: ${err.message}`);
+        }
       }
     }
 
@@ -1291,6 +1331,7 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
               additionalInstructions: updatedInstructions,
               customTrigger: updatedTrigger || undefined,
               cronJobId: existing.cronJobId,
+              ...(updatedPrompt && !template ? { generatedPrompt: updatedPrompt } : {}),
               updatedAt: now,
             }
           : w
@@ -1307,6 +1348,7 @@ router.put("/:id", async (req: AuthRequest, res: Response) => {
           schedule: updatedSchedule,
           additionalInstructions: updatedInstructions,
           customTrigger: updatedTrigger || undefined,
+          ...(updatedPrompt && !template ? { generatedPrompt: updatedPrompt } : {}),
           updatedAt: now,
         },
       },
@@ -1350,17 +1392,14 @@ router.patch("/:id/toggle", async (req: AuthRequest, res: Response) => {
         }
       } else {
         // Recreate cron job to resume
-        if (template) {
-          const agentPrompt = assemblePrompt(
-            template,
-            workflow.additionalInstructions,
-            workflow.customTrigger
-          );
+        const agentPrompt = getWorkflowPrompt(workflow);
+        if (agentPrompt) {
+          const sessionTarget = template?.sessionTarget || "isolated";
           try {
             const cronResult = (await gateway.send("cron.add", {
               name: workflow.cronJobName,
               schedule: buildCronSchedule(workflow.schedule),
-              sessionTarget: template.sessionTarget,
+              sessionTarget,
               payload: { kind: "agentTurn", message: agentPrompt },
             })) as any;
 
@@ -1457,12 +1496,6 @@ router.post("/:id/run", async (req: AuthRequest, res: Response) => {
       return;
     }
 
-    const template = getTemplateById(workflow.templateId);
-    if (!template) {
-      res.status(500).json({ ok: false, error: "Workflow template not found" });
-      return;
-    }
-
     // Try cron.run first, fall back to direct chat.send
     if (hasCronMethods() && (workflow.cronJobId || workflow.cronJobName)) {
       try {
@@ -1481,11 +1514,11 @@ router.post("/:id/run", async (req: AuthRequest, res: Response) => {
     }
 
     // Fallback: run prompt directly via agentExec
-    const agentPrompt = assemblePrompt(
-      template,
-      workflow.additionalInstructions,
-      workflow.customTrigger
-    );
+    const agentPrompt = getWorkflowPrompt(workflow);
+    if (!agentPrompt) {
+      res.status(500).json({ ok: false, error: "No prompt available for this workflow" });
+      return;
+    }
     await agentExec(agentPrompt, 120000);
     res.json({ ok: true, data: { triggered: true, method: "agentExec" } });
   } catch (err: any) {

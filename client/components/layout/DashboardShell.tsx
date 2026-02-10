@@ -11,19 +11,26 @@ export function DashboardShell({ children }: { children: ReactNode }) {
 
   // Eagerly prefetch all email data on login so the Email tab is instant
   useEffect(() => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+
     const prefetchEmail = async () => {
+      const opts = { signal: controller.signal };
+
       // 1. Fetch status first to know if connected
-      const statusRes = await api.get<any>("/email/status");
-      if (!statusRes.ok) return;
+      const statusRes = await api.get<any>("/email/status", opts);
+      if (!statusRes.ok || controller.signal.aborted) return;
       queryClient.setQueryData(["email-status"], statusRes.data);
 
       if (!statusRes.data?.connected) return;
 
       // 2. Fetch settings + inbox in parallel
       const [settingsRes, inboxRes] = await Promise.all([
-        api.get<any>("/email/settings"),
-        api.get<any>("/email/inbox?months=1"),
+        api.get<any>("/email/settings", opts),
+        api.get<any>("/email/inbox?months=1", opts),
       ]);
+
+      if (controller.signal.aborted) return;
 
       if (settingsRes.ok) {
         queryClient.setQueryData(["email-settings"], settingsRes.data);
@@ -35,7 +42,7 @@ export function DashboardShell({ children }: { children: ReactNode }) {
         const msgs = inboxRes.data.messages || [];
         if (msgs.length > 0) {
           const ids = msgs.map((m: any) => m.id).join(",");
-          const tagsRes = await api.get<any>(`/email/email-tags?ids=${ids}`);
+          const tagsRes = await api.get<any>(`/email/email-tags?ids=${ids}`, opts);
           if (tagsRes.ok) {
             queryClient.setQueryData(["email-tags", ids], tagsRes.data);
           }
@@ -44,6 +51,11 @@ export function DashboardShell({ children }: { children: ReactNode }) {
     };
 
     prefetchEmail().catch(() => {});
+
+    return () => {
+      clearTimeout(timeout);
+      controller.abort();
+    };
   }, [queryClient]);
 
   return (

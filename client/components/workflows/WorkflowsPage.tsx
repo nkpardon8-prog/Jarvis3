@@ -22,7 +22,8 @@ export function WorkflowsPage() {
       if (!res.ok) throw new Error(res.error || "Failed to load workflows");
       return res.data;
     },
-    refetchInterval: 30000, // Refresh every 30s for live cron status
+    refetchInterval: 30000,
+    refetchIntervalInBackground: false,
   });
 
   if (isLoading) {

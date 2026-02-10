@@ -36,15 +36,15 @@ async function request<T = unknown>(
 }
 
 export const api = {
-  get: <T = unknown>(path: string) => request<T>(path),
-  post: <T = unknown>(path: string, json?: unknown) =>
-    request<T>(path, { method: "POST", json }),
-  put: <T = unknown>(path: string, json?: unknown) =>
-    request<T>(path, { method: "PUT", json }),
-  patch: <T = unknown>(path: string, json?: unknown) =>
-    request<T>(path, { method: "PATCH", json }),
-  delete: <T = unknown>(path: string) =>
-    request<T>(path, { method: "DELETE" }),
+  get: <T = unknown>(path: string, opts?: ApiOptions) => request<T>(path, opts),
+  post: <T = unknown>(path: string, json?: unknown, opts?: ApiOptions) =>
+    request<T>(path, { method: "POST", json, ...opts }),
+  put: <T = unknown>(path: string, json?: unknown, opts?: ApiOptions) =>
+    request<T>(path, { method: "PUT", json, ...opts }),
+  patch: <T = unknown>(path: string, json?: unknown, opts?: ApiOptions) =>
+    request<T>(path, { method: "PATCH", json, ...opts }),
+  delete: <T = unknown>(path: string, opts?: ApiOptions) =>
+    request<T>(path, { method: "DELETE", ...opts }),
   upload: <T = unknown>(path: string, formData: FormData) =>
     request<T>(path, { method: "POST", body: formData }),
 };

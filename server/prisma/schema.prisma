@@ -37,18 +37,20 @@ model User {
   drafts              Draft[]
   proxyApiToken       ProxyApiToken?
   proxyProvisionStatus ProxyProvisionStatus?
+  schedulePreferences  SchedulePreferences?
 }
 
 model Todo {
-  id          String    @id @default(uuid())
-  userId      String
-  title       String
-  description String?
-  priority    String    @default("medium") // high, medium, low
-  dueDate     DateTime?
-  completed   Boolean   @default(false)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  id               String    @id @default(uuid())
+  userId           String
+  title            String
+  description      String?
+  priority         String    @default("medium") // high, medium, low
+  dueDate          DateTime?
+  estimatedMinutes Int?      // estimated time in minutes for AI scheduling
+  completed        Boolean   @default(false)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
@@ -304,6 +306,29 @@ model ProxyProvisionStatus {
   lastSuccessAt  DateTime?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model SchedulePreferences {
+  id                String   @id @default(uuid())
+  userId            String   @unique
+  wakeTime          String   @default("07:00")
+  sleepTime         String   @default("22:00")
+  workStartTime     String   @default("09:00")
+  workEndTime       String   @default("17:00")
+  lunchStart        String   @default("12:00")
+  lunchDuration     Int      @default(60)
+  focusBlockMinutes Int      @default(90)
+  breakMinutes      Int      @default(15)
+  travelBuffer      Int      @default(15)
+  midDayActivity    String   @default("")
+  midDayStart       String   @default("14:00")
+  midDayDuration    Int      @default(30)
+  preferMorning     Boolean  @default(true)
+  notes             String   @default("")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }

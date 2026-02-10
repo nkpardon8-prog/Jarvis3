@@ -26,26 +26,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [connected, setConnected] = useState(false);
   const socketRef = useRef<Socket | null>(null);
-
-  const getToken = useCallback(async (): Promise<string | null> => {
-    // Token is in httpOnly cookie, but Socket.io needs it in handshake
-    // We'll fetch it from the /api/auth/token endpoint
-    try {
-      const res = await fetch("/api/auth/me", { credentials: "include" });
-      if (res.ok) {
-        // Extract the cookie value - we need to pass it through a different mechanism
-        // Since cookies are httpOnly, we'll use a token endpoint
-        const tokenRes = await fetch("/api/auth/socket-token", { credentials: "include" });
-        if (tokenRes.ok) {
-          const data = await tokenRes.json();
-          return data.data?.token || null;
-        }
-      }
-    } catch {
-      // Ignore
-    }
-    return null;
-  }, []);
+  const connectingRef = useRef(false);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -59,40 +40,60 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    // Guard against duplicate connection attempts
+    if (connectingRef.current || socketRef.current) return;
+    connectingRef.current = true;
+
     // Connect Socket.io
     const connectSocket = async () => {
-      const token = await getToken();
-      if (!token) {
-        console.warn("[Socket] Could not get auth token for socket connection");
-        return;
+      try {
+        const tokenRes = await fetch("/api/auth/socket-token", {
+          credentials: "include",
+        });
+        if (!tokenRes.ok) {
+          console.warn("[Socket] Could not get auth token for socket connection");
+          connectingRef.current = false;
+          return;
+        }
+        const data = await tokenRes.json();
+        const token = data.data?.token;
+        if (!token) {
+          console.warn("[Socket] Empty token from socket-token endpoint");
+          connectingRef.current = false;
+          return;
+        }
+
+        const newSocket = io("http://localhost:3001", {
+          auth: { token },
+          transports: ["websocket"],
+          reconnection: true,
+          reconnectionDelay: 2000,
+          reconnectionDelayMax: 15000,
+          reconnectionAttempts: 10,
+        });
+
+        newSocket.on("connect", () => {
+          console.log("[Socket] Connected");
+          setConnected(true);
+        });
+
+        newSocket.on("disconnect", (reason) => {
+          console.log("[Socket] Disconnected:", reason);
+          setConnected(false);
+        });
+
+        newSocket.on("connect_error", (err) => {
+          console.warn("[Socket] Connection error:", err.message);
+          setConnected(false);
+        });
+
+        socketRef.current = newSocket;
+        setSocket(newSocket);
+      } catch {
+        console.warn("[Socket] Failed to fetch token");
+      } finally {
+        connectingRef.current = false;
       }
-
-      const newSocket = io("http://localhost:3001", {
-        auth: { token },
-        transports: ["websocket", "polling"],
-        reconnection: true,
-        reconnectionDelay: 1000,
-        reconnectionDelayMax: 5000,
-        reconnectionAttempts: Infinity,
-      });
-
-      newSocket.on("connect", () => {
-        console.log("[Socket] Connected");
-        setConnected(true);
-      });
-
-      newSocket.on("disconnect", (reason) => {
-        console.log("[Socket] Disconnected:", reason);
-        setConnected(false);
-      });
-
-      newSocket.on("connect_error", (err) => {
-        console.warn("[Socket] Connection error:", err.message);
-        setConnected(false);
-      });
-
-      socketRef.current = newSocket;
-      setSocket(newSocket);
     };
 
     connectSocket();
@@ -104,8 +105,9 @@ export function SocketProvider({ children }: { children: ReactNode }) {
         setSocket(null);
         setConnected(false);
       }
+      connectingRef.current = false;
     };
-  }, [isAuthenticated, getToken]);
+  }, [isAuthenticated]);
 
   return (
     <SocketContext.Provider value={{ socket, connected }}>

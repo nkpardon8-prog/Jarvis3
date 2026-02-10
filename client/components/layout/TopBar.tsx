@@ -12,7 +12,8 @@ export function TopBar() {
   const { data: healthData } = useQuery({
     queryKey: ["health"],
     queryFn: () => api.get<{ gateway: { connected: boolean } }>("/health"),
-    refetchInterval: 15000,
+    refetchInterval: 30000,
+    refetchIntervalInBackground: false,
   });
 
   const gatewayConnected = healthData?.data?.gateway?.connected ?? false;
