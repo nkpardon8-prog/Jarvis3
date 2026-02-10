@@ -4,6 +4,61 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-09 — Reliable OpenClaw Google proxy provisioning with status tracking, backfill, and UI
+
+**Author:** Omid (via Claude Code)
+**Commit:** feat: reliable OpenClaw proxy provisioning with status tracking, backfill, and retry UI
+**Branch:** oz/email-restructure-automation
+
+**What changed:**
+- **ProxyProvisionStatus Prisma model** — New model tracking provisioning state per user: `status` (pending/success/failed), `errorCode` (structured codes like `google_not_connected`, `gateway_disconnected`, `env_write_failed`, `skill_create_failed`), `errorMessage`, `targetProxyUrl`, `lastAttemptAt`, `lastSuccessAt`. Added relation to User model.
+- **Provisioning service rewrite** (`services/openclaw-google-proxy.service.ts`) — Complete rewrite with: idempotency guard (30s cooldown + concurrency Set), structured `ProvisionError` class with error codes, durable status recording (attempt/success/failure in DB), `getProvisionStatus()` for API reads, `ensureProvisioned()` for once-per-server-lifetime backfill, `resetBackfillFlag()` for manual retry, `backfillAllConnectedUsers()` startup sweep, compatibility env vars (`JARVIS_GOOGLE_PROXY_*` and `JARVIS_GMAIL_PROXY_*`).
+- **New API endpoints** — `GET /email/proxy-provision-status` returns full provisioning status with google/gateway connection info. `POST /email/proxy-token/deploy` now accepts `{ force: true }` body param and returns structured error codes on failure.
+- **Backfill triggers** — Three trigger points: (1) OAuth callback in `oauth.ts` calls `resetBackfillFlag` + provisions with `force: true`, (2) `GET /email/status` calls `ensureProvisioned()` once per server lifetime per user, (3) Gateway `connected` event in `index.ts` runs `backfillAllConnectedUsers()` to find and provision all Google-connected users without prior success.
+- **Provisioning status UI** (`OAuthAccountCard.tsx`) — When Google is connected, shows OpenClaw Proxy section with status indicator (green success/amber pending/red failed), error message on failure, last attempt timestamp, and "Retry Provisioning" / "Deploy to OpenClaw" button. Button disabled when gateway disconnected.
+- **CLAUDE.md updates** — Added ProxyProvisionStatus to Database section, rewrote Gmail Proxy section with provisioning state machine, backfill strategy, updated endpoint tables (added Calendar/Drive/Docs proxy endpoints, provisioning status endpoint, google-proxy alias), updated architecture tree, route map, gotchas.
+
+**Why:**
+- Users who connected Google OAuth before the proxy feature had no working OpenClaw access because `JARVIS_GMAIL_PROXY_URL`/`JARVIS_GMAIL_PROXY_TOKEN` were missing from the OpenClaw runtime env. Auto-provision only ran on fresh OAuth callback and silently failed with no way to retry. This change makes provisioning durable, retryable, and visible — failures are tracked with structured error codes, backfill runs on multiple trigger points, and users can see status and retry from the Connections page.
+
+**Files touched:**
+- `server/prisma/schema.prisma` — Added `ProxyProvisionStatus` model + User relation
+- `server/src/services/openclaw-google-proxy.service.ts` — Complete rewrite with status tracking, idempotency, backfill
+- `server/src/routes/email.ts` — Added `GET /proxy-provision-status`, updated deploy with force param, added `ensureProvisioned` to status endpoint
+- `server/src/routes/oauth.ts` — Added `resetBackfillFlag` + force provisioning on Google callback
+- `server/src/index.ts` — Added `backfillAllConnectedUsers` on gateway connected event
+- `client/components/connections/OAuthAccountCard.tsx` — Added provisioning status display with retry button
+- `CLAUDE.md` — Updated Database, Gmail Proxy, architecture tree, route map, gotchas sections
+
+---
+
+## 2026-02-09 — Gmail proxy for OpenClaw with proxy API token auth
+
+**Author:** Omid (via Claude Code)
+**Commit:** feat: Gmail proxy for OpenClaw — secure bearer-token API, proxy token CRUD, auto-deploy skill
+**Branch:** oz/email-restructure-automation
+
+**What changed:**
+- **ProxyApiToken Prisma model** — New model with `userId` (unique), `tokenHash` (SHA-256), `label`, `createdAt`. Added relation to User model. Only the hash is stored; plaintext is shown once on generation.
+- **Proxy auth middleware** (`middleware/proxyAuth.ts`) — Extracts bearer token from `Authorization` header, SHA-256 hashes it, looks up in `ProxyApiToken` table by hash. Attaches `req.user` with `role: "proxy"` on match, returns 401 on mismatch.
+- **Gmail proxy route** (`routes/gmail-proxy.ts`) — 6 endpoints behind `proxyAuthMiddleware`: `GET /messages` (paginated inbox with label/query filters), `GET /messages/:id` (full message with body extraction), `POST /messages/modify` (batch add/remove labels, max 50), `POST /messages/search` (Gmail query syntax), `GET /labels` (list all labels), `POST /labels` (create label). In-memory rate limiting: 30 req/min, 300 req/hour per token.
+- **Proxy token management** (`routes/email.ts`) — 4 new endpoints under JWT auth: `GET /proxy-token` (check existence), `POST /proxy-token` (generate/regenerate, returns plaintext once), `DELETE /proxy-token` (revoke), `POST /proxy-token/deploy` (generate + write token/URL to `~/.openclaw/.env` + create `jarvis-gmail` skill via `agentExec` + verify with `skills.status`).
+- **Route mounting** (`index.ts`) — Mounted `/api/gmail-proxy` route.
+- **CLAUDE.md updates** — Added "Gmail Proxy for OpenClaw" section (architecture, endpoint tables, deploy flow, security summary), updated architecture tree, database models, API route map, setup playbook (local/EC2/web proxy notes), gotchas.
+
+**Why:**
+- OpenClaw had no way to read Gmail or manage labels. Jarvis already has full per-user Google OAuth with `gmail.modify` scope. The proxy approach keeps all OAuth handling server-side — tokens never leave the server. OpenClaw authenticates with a per-user bearer token that maps to exactly one userId. This is safer than writing tokens to disk (they expire hourly) and more capable than embedding data in prompts (can't do write operations).
+
+**Files touched:**
+- `server/prisma/schema.prisma` — Added `ProxyApiToken` model + User relation
+- `server/src/middleware/proxyAuth.ts` — New: bearer token auth middleware
+- `server/src/routes/gmail-proxy.ts` — New: 6 Gmail proxy endpoints with rate limiting
+- `server/src/index.ts` — Import + mount `/api/gmail-proxy`
+- `server/src/routes/email.ts` — Added proxy token CRUD + deploy endpoints, agentExec helper, SKILL.md builder
+- `CLAUDE.md` — Gmail Proxy docs, updated route map, database, setup playbook, gotchas
+
+---
+
 ## 2026-02-09 — Rate limits, contact cache, background auto-tag, AI classification overhaul
 
 **Author:** Omid (via Claude Code)

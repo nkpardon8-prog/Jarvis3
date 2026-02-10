@@ -35,6 +35,8 @@ model User {
   processedEmails     ProcessedEmail[]
   emailContents       EmailContent[]
   drafts              Draft[]
+  proxyApiToken       ProxyApiToken?
+  proxyProvisionStatus ProxyProvisionStatus?
 }
 
 model Todo {
@@ -279,4 +281,29 @@ model EmailContent {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, emailId])
+}
+
+model ProxyApiToken {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  tokenHash String
+  label     String   @default("OpenClaw Gmail Proxy")
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model ProxyProvisionStatus {
+  id             String   @id @default(uuid())
+  userId         String   @unique
+  status         String   @default("pending") // pending, success, failed
+  errorCode      String?  // gateway_disconnected, google_not_connected, env_write_failed, skill_create_failed
+  errorMessage   String?
+  targetProxyUrl String?
+  lastAttemptAt  DateTime?
+  lastSuccessAt  DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }

@@ -22,7 +22,7 @@ jarvis/
 │   │   │   ├── connection.ts  Singleton gateway class with reconnect()
 │   │   │   ├── protocol.ts    Message building (buildRequest, buildConnectRequest, parseMessage)
 │   │   │   └── types.ts       Gateway protocol types
-│   │   ├── middleware/        JWT auth, error handler
+│   │   ├── middleware/        JWT auth, proxy auth, error handler
 │   │   ├── routes/            REST API endpoints (all gateway-only, no fs imports)
 │   │   │   ├── auth.ts        Register, login, logout, me, socket-token
 │   │   │   ├── health.ts      Server + gateway health check
@@ -33,12 +33,13 @@ jarvis/
 │   │   │   ├── skills.ts      List, install, update, hub search
 │   │   │   ├── todos.ts       CRUD for todos (Prisma)
 │   │   │   ├── calendar.ts    Events (Google/Microsoft), build-agenda
-│   │   │   ├── email.ts       Status, inbox (Gmail/Outlook), tags, settings
+│   │   │   ├── email.ts       Status, inbox (Gmail/Outlook), tags, settings, proxy token mgmt
+│   │   │   ├── gmail-proxy.ts Google proxy for OpenClaw (Gmail/Calendar/Drive, bearer token auth)
 │   │   │   ├── crm.ts         CRM features
 │   │   │   ├── oauth.ts       OAuth URLs, callbacks, status, store-credentials
 │   │   │   ├── drive.ts       Google Drive file list/search, Google Docs read
 │   │   │   └── gateway.ts     Gateway status, configure (runtime-only)
-│   │   ├── services/          OAuth, auth, crypto, Prisma client
+│   │   ├── services/          OAuth, auth, crypto, provisioning, Prisma client
 │   │   ├── socket/            Socket.io setup + chat streaming
 │   │   │   ├── index.ts       Socket.io server init
 │   │   │   ├── auth.ts        Socket auth middleware (JWT verification)
@@ -215,11 +216,13 @@ The Connections page includes a full Custom API Integration Builder that scaffol
 
 ## Database (Prisma/SQLite)
 
-Models: `User`, `Todo`, `EmailTag`, `EmailSettings`, `CrmSettings`, `OAuthToken`, `OAuthCredential`, `Notification`, `OnboardingProgress`
+Models: `User`, `Todo`, `EmailTag`, `EmailSettings`, `CrmSettings`, `OAuthToken`, `OAuthCredential`, `Notification`, `OnboardingProgress`, `ProxyApiToken`, `ProxyProvisionStatus`
 
 Key relationships:
 - `OAuthToken` has `@@unique([userId, provider])` — one token per provider per user
 - `OAuthCredential` has `@@unique([userId, provider])` — one credential set per provider per user (clientSecret encrypted)
+- `ProxyApiToken` has `@@unique` on `userId` — one proxy token per user (tokenHash stored, plaintext never persisted)
+- `ProxyProvisionStatus` has `@@unique` on `userId` — tracks provisioning state (pending/success/failed) with structured error codes and timestamps
 - All models cascade delete from User
 
 Run migrations: `cd server && npx prisma db push`
@@ -261,6 +264,97 @@ Microsoft scopes: Mail.ReadWrite, Calendars.ReadWrite, Files.ReadWrite.All, User
 
 OAuth callback URL is derived from `OAUTH_BASE_URL` env var (required in production). Callbacks must point to Express directly since they are full page navigations.
 
+## Gmail Proxy for OpenClaw
+
+OpenClaw (the AI agent) can read/search/manage Gmail through Jarvis as a secure proxy. OAuth tokens never leave the server — OpenClaw authenticates with a per-user proxy API token.
+
+### Architecture
+
+```
+OpenClaw Agent → HTTP (Bearer token) → Jarvis /api/gmail-proxy → Google Gmail/Calendar/Drive API (OAuth2)
+```
+
+- **Proxy auth**: `proxyAuthMiddleware` (`middleware/proxyAuth.ts`) extracts bearer token, SHA-256 hashes it, looks up in `ProxyApiToken` table by hash, attaches userId.
+- **Token storage**: Only the SHA-256 hash is stored in the DB. Plaintext is shown once on generation and written to `~/.openclaw/.env` via `agentExec`.
+- **Rate limiting**: 30 req/min, 300 req/hour per proxy token (in-memory sliding window in `gmail-proxy.ts`).
+- **Skill auto-deploy**: The deploy endpoint creates `~/.openclaw/skills/jarvis-google/SKILL.md` with full endpoint documentation for the agent.
+- **Compatibility aliases**: Routes mounted at both `/api/gmail-proxy` and `/api/google-proxy`. Env vars written as both `JARVIS_GOOGLE_PROXY_*` and `JARVIS_GMAIL_PROXY_*` for backwards compatibility.
+
+### Proxy Endpoints (`/api/gmail-proxy` and `/api/google-proxy` — bearer token auth)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/messages` | List inbox (paginated, filterable by label/query) |
+| `GET` | `/messages/:id` | Full message content (HTML/plain body) |
+| `POST` | `/messages/modify` | Batch add/remove labels (max 50 messages) |
+| `POST` | `/messages/search` | Search with Gmail query syntax |
+| `POST` | `/messages/send` | Send email |
+| `GET` | `/labels` | List all Gmail labels |
+| `POST` | `/labels` | Create a new Gmail label |
+| `GET` | `/calendar/events` | List calendar events |
+| `POST` | `/calendar/events` | Create calendar event |
+| `GET` | `/drive/files` | List drive files |
+| `GET` | `/drive/search` | Full-text drive search |
+| `GET` | `/docs/:docId` | Read Google Doc text |
+
+### Token Management & Provisioning Endpoints (`/api/email` — JWT auth)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/proxy-token` | Check if proxy token exists |
+| `POST` | `/proxy-token` | Generate/regenerate token (returns plaintext once) |
+| `DELETE` | `/proxy-token` | Revoke token (immediate access removal) |
+| `POST` | `/proxy-token/deploy` | Generate + deploy token & skill to OpenClaw (accepts `{ force: true }`) |
+| `GET` | `/proxy-provision-status` | Read provisioning status (state, errors, timestamps) |
+
+### Provisioning State Machine
+
+The provisioning service (`services/openclaw-google-proxy.service.ts`) tracks deployment state per user in the `ProxyProvisionStatus` table:
+
+```
+none → pending → success
+                → failed → (retry) → pending → ...
+```
+
+**States:**
+- `none` — No provisioning attempted yet
+- `pending` — Provisioning in progress
+- `success` — Token, env vars, and skill deployed to OpenClaw
+- `failed` — Deployment failed with structured error code
+
+**Error codes:** `google_not_connected`, `gateway_disconnected`, `env_write_failed`, `skill_create_failed`, `skill_verify_failed`
+
+**Idempotency guarantees:**
+- Concurrency guard: `activeProvisions` Set prevents parallel provisioning per user
+- Cooldown: 30-second minimum between attempts (skippable with `force: true`)
+- Backfill flag: `ensureProvisioned()` triggers once per server lifetime per user
+
+### Backfill Strategy
+
+Three trigger points ensure existing users get provisioned:
+
+1. **OAuth callback** (`oauth.ts`): On Google connect, immediately provisions with `force: true` and resets backfill flag
+2. **Email status fetch** (`email.ts GET /status`): Calls `ensureProvisioned(userId)` — fires once per server lifetime per user, only if Google connected + no prior success
+3. **Gateway reconnect** (`index.ts`): On gateway `connected` event, runs `backfillAllConnectedUsers()` — finds all Google-connected users without successful provision, provisions sequentially
+
+### Deploy Flow
+
+1. Pre-check: verify Google connected + gateway connected (structured error if not)
+2. Generate 32-byte random token, store SHA-256 hash in `ProxyApiToken` table
+3. Write `JARVIS_GOOGLE_PROXY_TOKEN` + `JARVIS_GMAIL_PROXY_TOKEN` to `~/.openclaw/.env` via `agentExec`
+4. Write `JARVIS_GOOGLE_PROXY_URL` + `JARVIS_GMAIL_PROXY_URL` to `~/.openclaw/.env` via `agentExec`
+5. Create `~/.openclaw/skills/jarvis-google/SKILL.md` via `agentExec`
+6. Verify skill registration with `skills.status`
+7. Record success/failure in `ProxyProvisionStatus`
+
+### Security
+
+- Tokens never leave Jarvis — OAuth access/refresh tokens stay server-side
+- Hash-only storage — proxy token stored as SHA-256 hash; plaintext shown once
+- Per-user isolation — token maps to exactly one userId; all API calls scoped to that user
+- Revocation — DELETE token → immediate access removal, skill becomes non-functional
+- No secrets in logs — provisioning logs method + path + userId only
+
 ## Socket.io Events
 
 | Direction | Event | Purpose |
@@ -286,7 +380,9 @@ OAuth callback URL is derived from `OAUTH_BASE_URL` env var (required in product
 | `/api/skills` | routes/skills.ts | List, install, update, hub search |
 | `/api/todos` | routes/todos.ts | CRUD for todos |
 | `/api/calendar` | routes/calendar.ts | Events (Google/Microsoft), build-agenda |
-| `/api/email` | routes/email.ts | Status, inbox (Gmail/Outlook), tags, settings |
+| `/api/email` | routes/email.ts | Status, inbox (Gmail/Outlook), tags, settings, proxy token CRUD + deploy, provisioning status |
+| `/api/gmail-proxy` | routes/gmail-proxy.ts | Google proxy for OpenClaw (Gmail, Calendar, Drive — bearer token auth) |
+| `/api/google-proxy` | routes/gmail-proxy.ts | Alias for `/api/gmail-proxy` |
 | `/api/crm` | routes/crm.ts | CRM features |
 | `/api/oauth` | routes/oauth.ts | OAuth URLs, callbacks, status, disconnect, store-credentials |
 | `/api/drive` | routes/drive.ts | Google Drive file list/search, Google Docs read |
@@ -404,6 +500,7 @@ User OAuth flow (no terminal):
 3. Paste Google Client ID + Client Secret (two fields).
 4. Consent once in browser.
 5. Gmail/Calendar/Docs/Drive should work for that account.
+6. (Optional) Deploy Gmail proxy for OpenClaw: Email tab → Deploy Gmail Proxy. This auto-generates a proxy token and installs the `jarvis-gmail` skill. `JARVIS_GMAIL_PROXY_URL` defaults to `http://localhost:3001`.
 
 Google OAuth client requirements for local:
 
@@ -421,6 +518,8 @@ Same code and same UI flow. Only gateway connectivity changes:
 - Keep local OAuth callback as `OAUTH_BASE_URL=http://localhost:3001` for local Jarvis testing
 
 Everything else (OAuth credential entry, consent flow, token storage/refresh) is unchanged.
+
+Gmail proxy note: When deploying the Gmail proxy, `JARVIS_GMAIL_PROXY_URL` must point to the Jarvis server's address reachable from the EC2 OpenClaw instance (e.g. the local machine's LAN IP or a tunnel URL, NOT `localhost`).
 
 ### C) Hosted Website (Jarvis on web)
 
@@ -444,6 +543,7 @@ End-user flow on web:
 3. Paste Client ID + Client Secret.
 4. Consent once in browser.
 5. OAuth remains connected for that account unless revoked/disconnected.
+6. (Optional) Deploy Gmail proxy: `JARVIS_GMAIL_PROXY_URL` uses the public backend origin (`OAUTH_BASE_URL`).
 
 ## Gotchas & Patterns
 
@@ -453,6 +553,8 @@ End-user flow on web:
 - **Encrypted OAuth secrets** — `crypto.service.ts` uses AES-256-GCM with `OAUTH_CREDENTIALS_ENCRYPTION_KEY`. Refresh tokens in `OAuthToken` also encrypted. Legacy plaintext tokens handled gracefully (try decrypt, fallback to raw value, re-encrypt on next refresh).
 - **patchConfig retry** — Used by connections/integrations routes (NOT oauth routes). Handles hash conflicts from concurrent writes
 - **agentExec idempotent prompts** — Credential storage prompts use "update-or-append" pattern: if a line starting with `KEY=` exists, replace it; otherwise append. This prevents duplicates on retry.
+- **Google proxy token** — Stored as SHA-256 hash in `ProxyApiToken` table. Plaintext shown once on generation and deployed to `~/.openclaw/.env` via `agentExec`. The `/api/gmail-proxy` (and alias `/api/google-proxy`) routes use `proxyAuthMiddleware` (bearer token) instead of `authMiddleware` (JWT cookie).
+- **Proxy provisioning** — `openclaw-google-proxy.service.ts` handles end-to-end provisioning with durable status tracking in `ProxyProvisionStatus`. Three backfill triggers (OAuth callback, email status fetch, gateway reconnect) ensure existing users are provisioned. Concurrency guard + 30s cooldown prevent duplicate attempts. UI shows status in OAuthAccountCard with retry button.
 - **deliver: "full"** — Used in `agentExec()` and calendar's `build-agenda` to get complete agent responses synchronously without streaming
 - **Next.js rewrites** — All `/api/*` requests proxy from :3000 to :3001 via `next.config.ts`
 - **OAuth callbacks bypass proxy** — Must point to Express directly (configured via `OAUTH_BASE_URL`)

@@ -11,6 +11,7 @@ import {
   storeUserOAuthCredentials,
   deleteUserOAuthCredentials,
 } from "../services/oauth.service";
+import { provisionOpenClawGoogleProxy, resetBackfillFlag } from "../services/openclaw-google-proxy.service";
 import { config } from "../config";
 
 const router = Router();
@@ -48,6 +49,13 @@ router.get("/google/callback", async (req: Request, res: Response) => {
   const result = await handleGoogleCallback(String(code), String(state));
 
   if (result.success) {
+    // Fire-and-forget: auto-provision OpenClaw Google proxy after OAuth connect
+    if (result.userId) {
+      resetBackfillFlag(result.userId); // Fresh connect — always provision
+      provisionOpenClawGoogleProxy(result.userId, { force: true }).catch((err: any) => {
+        console.error("[OAuth] OpenClaw Google proxy auto-provision failed:", err.message);
+      });
+    }
     res.redirect(`${config.corsOrigin}/dashboard/connections?oauth=success&provider=google`);
   } else {
     res.redirect(

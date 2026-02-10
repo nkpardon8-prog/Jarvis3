@@ -190,7 +190,7 @@ export async function getGoogleAuthUrl(userId: string): Promise<string> {
 export async function handleGoogleCallback(
   code: string,
   state: string
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; userId?: string }> {
   const stateData = verifyOAuthState(state);
   if (!stateData || stateData.provider !== "google") {
     return { success: false, error: "Invalid or expired state parameter" };
@@ -240,7 +240,7 @@ export async function handleGoogleCallback(
       },
     });
 
-    return { success: true };
+    return { success: true, userId: stateData.userId };
   } catch (err: any) {
     console.error("[OAuth] Google callback error:", err.message);
     return { success: false, error: err.message };

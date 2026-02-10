@@ -21,7 +21,9 @@ import integrationsRoutes from "./routes/integrations";
 import driveRoutes from "./routes/drive";
 import composerRoutes from "./routes/composer";
 import automationRoutes from "./routes/automation";
+import gmailProxyRoutes from "./routes/gmail-proxy";
 import { gateway } from "./gateway/connection";
+import { backfillAllConnectedUsers } from "./services/openclaw-google-proxy.service";
 import { setupSocketIO } from "./socket";
 import multer from "multer";
 
@@ -69,6 +71,8 @@ app.use("/api/integrations", integrationsRoutes);
 app.use("/api/drive", driveRoutes);
 
 app.use("/api/automation", automationRoutes);
+app.use("/api/gmail-proxy", gmailProxyRoutes);
+app.use("/api/google-proxy", gmailProxyRoutes);
 
 // Composer routes — apply multer for file upload endpoints
 app.use("/api/composer/upload", composerUpload.single("file"));
@@ -122,6 +126,10 @@ httpServer.listen(config.port, async () => {
 
   gateway.on("connected", async () => {
     console.log("[Jarvis] Gateway reconnected");
+    // Backfill proxy provisioning for already-connected Google users
+    backfillAllConnectedUsers().catch((err: any) => {
+      console.error("[Jarvis] Proxy backfill error:", err.message);
+    });
   });
 });
 
