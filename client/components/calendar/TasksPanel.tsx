@@ -350,7 +350,7 @@ function TaskItem({
   const [editDuration, setEditDuration] = useState(
     todo.estimatedMinutes ? String(todo.estimatedMinutes) : ""
   );
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const updateTodo = useMutation({
     mutationFn: async (updates: Record<string, any>) => {

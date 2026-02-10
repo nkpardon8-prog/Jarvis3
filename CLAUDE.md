@@ -27,6 +27,7 @@ jarvis/
 │   │   │   ├── auth.ts        Register, login, logout, me, socket-token
 │   │   │   ├── health.ts      Server + gateway health check
 │   │   │   ├── chat.ts        Sessions, history, reset, delete
+│   │   │   ├── everyday-ai.ts BYOK chat + active research routes
 │   │   │   ├── dashboard.ts   Aggregated status
 │   │   │   ├── connections.ts Config, providers, models, credentials (via agentExec)
 │   │   │   ├── integrations.ts Custom API integration builder (6 endpoints)
@@ -40,7 +41,7 @@ jarvis/
 │   │   │   ├── oauth.ts       OAuth URLs, callbacks, status, store-credentials
 │   │   │   ├── drive.ts       Google Drive file list/search, Google Docs read
 │   │   │   └── gateway.ts     Gateway status, configure (runtime-only)
-│   │   ├── services/          OAuth, auth, crypto, provisioning, Prisma client
+│   │   ├── services/          OAuth, auth, crypto, memory, provisioning, Prisma client
 │   │   ├── socket/            Socket.io setup + chat streaming
 │   │   │   ├── index.ts       Socket.io server init
 │   │   │   ├── auth.ts        Socket auth middleware (JWT verification)
@@ -72,6 +73,7 @@ jarvis/
     │   │   ├── CronExpressionInput.tsx   Raw cron expression input with preview
     │   │   └── workflowTemplates.ts      5 static template definitions + types + helpers
     │   ├── chat/              Chat interface components
+    │   ├── everyday-ai/       BYOK chat + Active research UI
     │   ├── ui/                Shared UI components (GlassPanel, HudButton, etc.)
     │   └── ...                Other feature components
     ├── lib/                   API client, contexts, hooks
@@ -180,6 +182,7 @@ async function agentExec(prompt: string, timeoutMs = 60000) {
 **Provider/service credential storage goes through the gateway.** OAuth credentials are stored per-user in the local Prisma DB.
 
 - **Provider API keys** (OpenAI, Anthropic, etc.): Stored via `agentExec()` prompt that writes to `~/.openclaw/.env` on the OpenClaw host, PLUS redundantly stored in gateway config at `models.providers.<provider>.apiKey` via `config.patch` for fast reads
+- **Everyday AI provider keys**: Also stored per-user in Prisma `UserProviderKey` (AES-256-GCM encrypted) for BYOK chat usage; auto-imports from gateway config on first request
 - **Service keys** (Notion, Trello, etc.): Same `agentExec()` pattern to `~/.openclaw/.env`
 - **OAuth client credentials** (Google/Microsoft): Stored **per-user** in Prisma `OAuthCredential` table with AES-256-GCM encrypted `clientSecret`. Resolved via `resolveCredentials(userId, provider)` with legacy env var fallback.
 - **OAuth tokens** (access/refresh): Stored in Prisma `OAuthToken` table. Refresh tokens encrypted at rest via `crypto.service.ts`.

@@ -43,8 +43,8 @@ export function SchedulePreferences() {
   const queryClient = useQueryClient();
   const [saved, setSaved] = useState(false);
   const [localPrefs, setLocalPrefs] = useState<Prefs>(defaultPrefs);
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout>>();
-  const savedTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const { data, isLoading } = useQuery({
     queryKey: ["schedule-preferences"],

@@ -35,12 +35,14 @@ model User {
   processedEmails     ProcessedEmail[]
   emailContents       EmailContent[]
   drafts              Draft[]
-  proxyApiToken       ProxyApiToken?
+  proxyApiToken        ProxyApiToken?
   proxyProvisionStatus ProxyProvisionStatus?
-  taggingSchedule     TaggingSchedule?
+  taggingSchedule      TaggingSchedule?
   schedulePreferences  SchedulePreferences?
   savedAgendas         SavedAgenda[]
   workflows            Workflow[]
+  providerKeys         UserProviderKey[]
+  activeResearchState  ActiveResearchState?
 }
 
 model Todo {
@@ -354,6 +356,23 @@ model SchedulePreferences {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
+model SavedAgenda {
+  id             String   @id @default(uuid())
+  userId         String
+  date           String   // "YYYY-MM-DD" local date the agenda is for
+  items          String   // JSON-serialized AgendaItem[] array
+  raw            String?  // Raw AI text if JSON parsing failed
+  completedItems String   @default("[]") // JSON array of completed item indices
+  eventCount     Int      @default(0)
+  taskCount      Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+}
+
 model Workflow {
   id                     String   @id @default(uuid())
   userId                 String
@@ -375,19 +394,25 @@ model Workflow {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
-model SavedAgenda {
-  id             String   @id @default(uuid())
-  userId         String
-  date           String   // "YYYY-MM-DD" local date the agenda is for
-  items          String   // JSON-serialized AgendaItem[] array
-  raw            String?  // Raw AI text if JSON parsing failed
-  completedItems String   @default("[]") // JSON array of completed item indices
-  eventCount     Int      @default(0)
-  taskCount      Int      @default(0)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+model UserProviderKey {
+  id        String   @id @default(uuid())
+  userId    String
+  provider  String
+  apiKey    String   // AES-256-GCM encrypted
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@unique([userId, date])
+  @@unique([userId, provider])
+}
+
+model ActiveResearchState {
+  id               String   @id @default(uuid())
+  userId           String   @unique
+  skillInstalledAt DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }

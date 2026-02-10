@@ -4,266 +4,244 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
-## 2026-02-10 — Fix merge-dropped Prisma models: restore Workflow, SavedAgenda, SchedulePreferences
+## 2026-02-10 — Add "Your everyday AI" BYOK chat + Active research
 
-**Author:** Nick (via Claude Code)
-**Commit:** fix: restore Workflow, SavedAgenda, SchedulePreferences models dropped during merge
+**Author:** Nick (via Codex)
+**Commit:** feat: add everyday AI tab with BYOK chat, memory, and active research
 **Branch:** main
 
 **What changed:**
-- **schema.prisma — Restored 3 Prisma models lost during oz/email-restructure-automation merge**: `Workflow` (workflow metadata), `SavedAgenda` (persisted AI agendas with `@@unique([userId, date])`), `SchedulePreferences` (user schedule preferences for agenda builder). The User model still had `workflows Workflow[]`, `savedAgendas SavedAgenda[]`, and `schedulePreferences SchedulePreferences?` relations pointing to these, but the actual model definitions were dropped in the merge conflict resolution.
-- Ran `npx prisma validate` (✅), `npx prisma db push` (✅), `npx tsc --noEmit` (✅)
+- **New dashboard tab + route**: Added "Your everyday AI" tab in navigation and `/dashboard/everyday-ai` page with Chat + Active research sub-tabs.
+- **BYOK chat wrapper**: New `/api/everyday-ai/chat` route streams provider responses and injects per-user memory as a system message.
+- **Provider keys in DB**: Added `UserProviderKey` model with AES-256-GCM encryption; Connections "save key" now persists into DB and auto-imports from gateway config on first use.
+- **Memory service**: New `server/data/memory/<userId>.md` files with service helpers; assistant responses append concise summary bullets.
+- **Active research mode**: `/api/everyday-ai/active-research` proxies to OpenClaw in isolated session with strict research-only system prompt; auto-installs an `active-research` skill on first use.
 
 **Why:**
-- PR #4 merge from oz/email-restructure-automation silently dropped these 3 model definitions from the end of schema.prisma while keeping the User relation references. This caused Prisma validation failures and would have broken the server on restart.
+- Provides a lightweight, ChatGPT-adjacent BYOK chat surface while keeping OpenClaw agent workflows separate.
+- Enables personalized memory and safe research-only browsing with explicit tool restrictions.
 
 **Files touched:**
-- `server/prisma/schema.prisma` — Added back Workflow, SavedAgenda, SchedulePreferences model definitions
-- `CHANGES.md` — Added this entry
-
----
-
-## 2026-02-10 — Fix "invalid config" error: migrate workflow storage from gateway config to Prisma DB
-
-**Author:** Nick (via Claude Code)
-**Commit:** `3508346` — fix: migrate workflow storage from gateway config to Prisma DB — fixes "invalid config" error
-**Branch:** main
-
-**What changed:**
-- **schema.prisma — Added `Workflow` model**: New Prisma model to store workflow metadata (id, userId, templateId, name, status, schedule, cronJobId, cronJobName, installedSkills, storedCredentials, generatedPrompt, errorMessage, timestamps). Added `workflows Workflow[]` relation on User model. Replaces the previous approach of storing workflows in gateway config at `config.jarvis.workflows[]`.
-- **workflows.ts — Complete migration of all CRUD endpoints to Prisma**: Rewrote all workflow endpoints (GET list, POST create template, POST create custom, PUT update, PATCH toggle, DELETE, POST run, GET history) to use `prisma.workflow.findMany/findFirst/create/update/delete` instead of `config.get`/`patchConfig`/`WorkflowInstance` type. Removed the `patchConfig` helper and `WorkflowInstance` type entirely. Added `serializeWorkflow()` helper to convert Prisma rows (with JSON string fields) to API response shape.
-- **workflows.ts — Fixed `getWorkflowPrompt` function**: Updated type signature to accept either a Prisma row or serialized object instead of the removed `WorkflowInstance` type.
-- **workflows.ts — Fixed templates endpoint**: Removed `storedEnvKeys` lookup from gateway config (which was being rejected). Credential `alreadyStored` is now always `false`.
-- **workflows.ts — All endpoints now scoped by userId**: Every Prisma query includes `where: { userId }` for multi-user data isolation.
-- **CLAUDE.md — Updated documentation**: Documented gateway config restrictions (`additionalProperties: false`), corrected namespace conventions, updated workflow storage location to Prisma, added Workflow and SavedAgenda to DB model list.
-
-**Why:**
-- The gateway config uses strict schema validation with `additionalProperties: false`. Only specific top-level keys are allowed (`meta`, `wizard`, `agents`, `messages`, `commands`, `channels`, `gateway`, `skills`, `plugins`). The `jarvis` key and `storedEnvKeys` key were both rejected, causing every workflow creation to fail with "invalid config". Moving to Prisma is architecturally correct per the project's core principle: "user-specific data lives in the local Prisma DB."
-
-**Verified:**
-- All 5 pre-built templates create successfully (github-triage, google-workspace-assistant, notion-curator, social-listening, smart-home-ops)
-- SSE streaming progress works for template creation
-- Pause/Resume toggle, Update schedule, Delete, Force-run, History all work
-- All workflows get valid cronJobIds from gateway
-
-**Files touched:**
-- `server/prisma/schema.prisma` — Added Workflow model + User relation
-- `server/src/routes/workflows.ts` — Complete rewrite of all CRUD operations from gateway config to Prisma DB
-- `CLAUDE.md` — Updated gateway config docs, workflow storage location, DB model list
-- `CHANGES.md` — Added this entry
-
----
-
-## 2026-02-10 — Fix workflow creation hang: SSE streaming progress + cron.add direct
-
-**Author:** Nick (via Claude Code)
-**Commit:** `e8391d9` — fix: workflow creation no longer hangs — SSE streaming progress, direct cron.add, reduced timeouts
-**Branch:** main
-
-**What changed:**
-- **workflows.ts — SSE streaming progress for POST /workflows and POST /workflows/custom**: Both endpoints now support `Accept: text/event-stream` to stream real-time progress events. Each step (skills, credentials, analyze, cron, verify) sends an SSE event when it starts and completes.
-- **workflows.ts — Removed agentExec fallback for cron creation**: Verified `cron.add` gateway method works (<1s). Removed the 30-60s `agentExec` fallback path that was the primary cause of hangs.
-- **workflows.ts — Reduced timeouts**: Credential storage 30s (was 60s), analysis 90s (was 120s), failures non-blocking.
-- **api.ts — Added `postWithProgress` SSE method**: New `api.postWithProgress()` with 3-minute AbortController timeout and graceful fallback.
-- **WorkflowSetupModal.tsx — Real-time progress from server**: SSE-driven progress updates replace fake timed animations.
-- **CustomWorkflowBuilder.tsx — Real-time progress from server**: Same SSE-driven progress.
-
-**Why:**
-- Workflow creation was hanging because the client showed fake progress while a single blocking API call did ALL work server-side. The `agentExec` fallback for cron creation was unnecessary — `cron.add` works in <1 second.
-
-**Files touched:**
-- `server/src/routes/workflows.ts` — SSE streaming, removed agentExec cron fallbacks, reduced timeouts
-- `client/lib/api.ts` — Added `postWithProgress` SSE method
-- `client/components/workflows/WorkflowSetupModal.tsx` — SSE-driven progress
-- `client/components/workflows/CustomWorkflowBuilder.tsx` — SSE-driven progress
-
----
+- `client/components/layout/TabNavigation.tsx` — Added "Your everyday AI" tab
+- `client/app/dashboard/everyday-ai/page.tsx` — New route
+- `client/components/everyday-ai/EverydayAIPage.tsx` — Chat + Active research UI
+- `client/lib/hooks/useEverydayAIChat.ts` — Streaming BYOK chat hook
+- `server/src/routes/everyday-ai.ts` — Models/chat/active-research endpoints
+- `server/src/services/provider-keys.service.ts` — Encrypted provider key storage + auto-import
+- `server/src/services/memory.service.ts` — Memory read/write/append utilities
+- `server/src/services/active-research.service.ts` — Skill auto-install + system prompt
+- `server/prisma/schema.prisma` — Added `UserProviderKey` and `ActiveResearchState`
+- `server/src/routes/connections.ts` — Persist provider keys into DB on save
+- `server/src/index.ts` — Mounted `/api/everyday-ai`
+- `server/data/memory/.gitkeep` — Memory directory
 
 ## 2026-02-10 — Fix infinite re-render loop: memoize Context Provider values
 
 **Author:** Nick (via Claude Code)
-**Commit:** `875b956` — fix: memoize AuthContext and SocketContext provider values to stop infinite re-renders
+**Commit:** fix: memoize AuthContext and SocketContext provider values to stop infinite re-renders
 **Branch:** main
 
 **What changed:**
-- **AuthContext.tsx** — Wrapped provider value in `useMemo` to prevent new object reference every render
-- **SocketContext.tsx** — Same `useMemo` fix for `{ socket, connected }`
+- **AuthContext.tsx — Wrapped provider value in `useMemo`**: The `value={{ user, isLoading, ... }}` inline object was creating a new reference on every render, causing every component that calls `useAuth()` to re-render, which triggered their effects, which caused state changes, which triggered more renders — an infinite loop. Now memoized with stable deps.
+- **SocketContext.tsx — Wrapped provider value in `useMemo`**: Same pattern — `value={{ socket, connected }}` was a new object each render. Now `useMemo(() => ({ socket, connected }), [socket, connected])`.
 
 **Why:**
-- Root cause of UI freeze. Without `useMemo`, every render created a new provider value object, forcing all consumers to re-render in an infinite loop.
+- This was the root cause of the "rendering" freeze. React Context propagates updates to ALL consumers when the Provider value changes by reference. Without `useMemo`, every single render of the AuthProvider created a new object, which forced every `useAuth()` consumer to re-render, which triggered effects in those components, which caused state changes, which triggered AuthProvider to re-render again — infinite loop. The SocketContext compounded this since it sits inside the AuthProvider tree and consumes `useAuth()`.
 
 **Files touched:**
-- `client/lib/contexts/AuthContext.tsx` — Added `useMemo`
-- `client/lib/contexts/SocketContext.tsx` — Added `useMemo`
+- `client/lib/contexts/AuthContext.tsx` — Added `useMemo` for provider value, extracted `isAuthenticated` to a variable
+- `client/lib/contexts/SocketContext.tsx` — Added `useMemo` for provider value
 
 ---
 
-## 2026-02-10 — Stabilize chat polling, throttle scroll, break effect cascades
+## 2026-02-10 — Fix UI freeze: stabilize chat polling, scroll throttling, effect chains
 
 **Author:** Nick (via Claude Code)
-**Commit:** `b881be3` — fix: stabilize chat polling, throttle scroll, break effect cascades
+**Commit:** fix: stabilize chat polling, throttle scroll, break effect cascades
 **Branch:** main
 
 **What changed:**
-- Stabilized chat polling and scroll behavior, broke infinite effect cascades
+- **useChat.ts — Broke cascading effect chains**: Replaced two `useEffect` hooks that synced refs (`sessionKeyRef`, `messagesRef`) with direct ref assignment in the render body. This eliminates two effects that fired on every state change and could trigger downstream effect chains.
+- **useChat.ts — Stabilized `startPolling`/`stopPolling`**: Removed `pollHistory` from `startPolling`'s dependency array by using a `pollHistoryRef` pattern. Now `startPolling` and `stopPolling` have **empty dependency arrays** and never recreate, which means effects depending on them are stable and don't re-run spuriously.
+- **useChat.ts — Increased fast poll interval**: Changed from 500ms to 2000ms. The 500ms interval was creating sustained high-frequency API calls during active responses, each triggering full history reconciliation.
+- **useChat.ts — Added concurrent poll guard**: `pollInFlightRef` prevents overlapping poll requests from stacking up when the previous one hasn't resolved yet.
+- **useChat.ts — Socket effect stabilized**: The socket event handler effect now only re-runs when `socket` changes (plus two stable callbacks). Previously it had `pollHistory`, `startPolling`, `markResponseReceived` as dependencies which could cascade.
+- **ChatMessages.tsx — Throttled streaming scroll**: Split auto-scroll into two effects: one for new messages (smooth scroll, runs on `messages`/`awaitingResponse` changes only), and one for streaming tokens (instant scroll, throttled to max once per 300ms). Previously every streaming token triggered `scrollIntoView({ behavior: "smooth" })`, queuing expensive smooth-scroll animations faster than they could complete.
+- **AIAgenda.tsx — Moved mutation out of setState updater**: `saveCompletions.mutate()` was being called inside a `setCompletedItems` updater function, which is a side effect in a state updater. Moved to a separate call after the state update.
+- **SocketContext.tsx — Configurable socket URL**: Socket.io URL now reads from `NEXT_PUBLIC_SOCKET_URL` env var, falling back to `http://localhost:3001`. Production deployments can set this without code changes.
+
+**Why:**
+- The app was freezing after clicking around for a while. Root cause: cascading `useEffect` chains in `useChat.ts` where callback recreation triggered effect re-runs, which recreated callbacks, which triggered more effects. Combined with 500ms polling (creating 2 API calls/second even when idle after a response), unthrottled smooth-scroll animations during streaming, and side effects inside setState updaters, the React render loop would eventually bog down to the point of freezing.
 
 **Files touched:**
-- Various chat components
+- `client/lib/hooks/useChat.ts` — Stabilized all callback deps, added pollHistoryRef pattern, increased fast poll, added poll concurrency guard
+- `client/components/chat/ChatMessages.tsx` — Split scroll into message-triggered (smooth) and stream-triggered (instant, throttled 300ms)
+- `client/components/calendar/AIAgenda.tsx` — Moved mutation out of setState updater
+- `client/lib/contexts/SocketContext.tsx` — Made socket URL configurable via env var
 
 ---
 
-## 2026-02-10 — Agenda mark-complete with persistence and firework animation
+## 2026-02-10 — Agenda mark-complete with persistence + sci-fi firework animation
 
 **Author:** Nick (via Claude Code)
-**Commit:** `cc058a8` — feat: agenda mark-complete with persistence and sci-fi firework animation
+**Commit:** feat: agenda mark-complete with persistence and sci-fi firework animation
 **Branch:** main
 
 **What changed:**
-- Added mark-complete functionality for AI agenda items with persistent state
-- Added sci-fi firework particle animation on completion
+- **`completedItems` field on SavedAgenda**: New `String @default("[]")` field stores JSON array of completed item indices, persisted to DB.
+- **PATCH `/calendar/agenda` endpoint**: Accepts `{ date, completedItems }` to update completed items for a saved agenda. Validates date format and array type.
+- **GET `/calendar/agenda` returns `completedItems`**: Saved completions are now included in the response so they restore on page load.
+- **Mark Complete on all agenda items**: Every item (events, tasks, breaks, lunch, activities) now has a "Mark Complete" button — not just tasks with a `taskId`. Items with a linked `taskId` also mark the actual todo as complete in the DB.
+- **Persistent completions**: Completed items survive page refresh, tab switches, and browser close. Stored by item index in the `SavedAgenda` record. Reset on agenda rebuild.
+- **Sci-fi firework particle animation**: Canvas-based particle burst (28 particles, 2 rings) plays inline next to the item when marked complete. Uses the HUD color palette (cyan, green, amber, purple, white) with radial gradient flash, glow trails, and natural decay. Auto-cleans up after ~55 frames.
+- **Progress bar**: Gradient bar (green→cyan) below stats row shows completion progress as a percentage.
+- **Completion counter**: Stats bar shows "X/Y done" with green checkmark when items are completed.
+- **Visual completion states**: Completed items fade to 50% opacity, show green CheckCircle2 icon, line-through text, "done" badge replacing type badge, and green timeline dot.
+
+**Why:**
+- "Mark Complete" previously only worked for tasks with a `taskId` and was lost on refresh — purely cosmetic. Now all items can be marked complete, the state persists to the database, and the firework animation gives satisfying feedback in the Iron Man HUD style.
 
 **Files touched:**
-- `client/components/calendar/AIAgenda.tsx`
-- `server/src/routes/calendar.ts`
-- `server/prisma/schema.prisma`
+- `server/prisma/schema.prisma` — Added `completedItems` field to `SavedAgenda`
+- `server/src/routes/calendar.ts` — Added PATCH `/calendar/agenda`, updated GET `/agenda` to return completedItems
+- `client/components/calendar/AIAgenda.tsx` — Complete rewrite: SciFiFirework canvas component, persistent completions via PATCH, mark-complete on all items, progress bar, completion counter
 
 ---
 
-## 2026-02-10 — AI agenda persistence with Today/Tomorrow toggle
+## 2026-02-10 — AI Agenda persistence + pre-run for tomorrow
 
 **Author:** Nick (via Claude Code)
-**Commit:** `ec78eb6` — feat: AI agenda persistence with Today/Tomorrow toggle and auto-load
+**Commit:** feat: AI agenda persistence with Today/Tomorrow toggle and auto-load
 **Branch:** main
 
 **What changed:**
-- Added SavedAgenda Prisma model for persisting generated agendas
-- Today/Tomorrow pill toggle in AI Agenda panel
-- Auto-load saved agendas on tab open
-- "Generated at" timestamp indicator
-
-**Files touched:**
-- `server/prisma/schema.prisma` — Added SavedAgenda model
-- `server/src/routes/calendar.ts` — GET /agenda, modified POST /build-agenda to persist
-- `client/components/calendar/AIAgenda.tsx` — Toggle, auto-load, timestamp
-
----
-
-## 2026-02-09 — Root-cause fix: tagging cron auth failure, token rotation desync, stuck UI
-
-**Author:** Omid (via Claude Code)
-**Commit:** fix: self-contained cron prompt, skip needless token rotation, UI staleness detection
-**Branch:** oz/email-restructure-automation
-
-**What changed:**
-- Rewrote `buildTaggingPrompt()` from a 1-sentence delegation stub into a self-contained ~60-line prompt with: explicit `~/.openclaw/.env` sourcing instructions, embedded proxy base URL, full step-by-step workflow (5 steps: read config, fetch emails, classify, apply Gmail labels, report results), exact endpoint paths, auth header format, error handling, and response format
-- Added `getProxyUrl()` helper to resolve proxy URL from `config.oauthBaseUrl` (production-safe)
-- Rewrote enable flow provisioning: now checks `ProxyProvisionStatus` + `ProxyApiToken` directly and SKIPS provisioning if already successful — avoids force-rotating the token which desynced DB hash from .env plaintext causing persistent 401s
-- If provisioning actually fails during enable, returns error immediately instead of creating an orphaned cron job
-- Added `config` import back to email.ts for proxy URL resolution
-- Fixed `TagManager.tsx` stuck "Backfill starting..." state: after 5 minutes with no run, shows "First run may have failed — try Run Now" in error color instead of infinite amber spinner
-
-**Root cause analysis:**
-1. **Cron prompt was a thin delegation stub** — "Run the jarvis-email-tagging skill now" (1 sentence). Isolated cron sessions do NOT auto-source `~/.openclaw/.env`, so the agent couldn't resolve `JARVIS_GOOGLE_PROXY_TOKEN` or `JARVIS_GOOGLE_PROXY_URL`. Working workflow templates use 500+ word self-contained prompts.
-2. **Enable flow force-rotated token every time** — `provisionOpenClawGoogleProxy(force: true)` always generates a new token+hash. If the LLM-based .env write via agentExec didn't execute perfectly, the DB hash and .env plaintext desynced → every proxy call returned 401.
-3. **UI had no staleness detection** — showed "Backfill starting..." forever when cron failed before calling POST /tagging/results (which is exactly what happens on auth failures).
-
-**Files touched:**
-- `server/src/routes/email.ts` — MODIFIED: rewrote `buildTaggingPrompt()`, added `getProxyUrl()`, smart provisioning check in enable flow, proxyUrl passed to prompt in run endpoint, re-added `config` import
-- `client/components/email/TagManager.tsx` — MODIFIED: staleness detection replaces infinite "Backfill starting..." with error hint after 5 min
-- `CHANGES.md` — MODIFIED: added this entry
-
-**SKILL.md files changed: NONE** — no skill files were created, modified, or deployed.
-
----
-
-## 2026-02-09 — Fix missing proxy env vars in tagging enable flow
-
-**Author:** Omid (via Claude Code)
-**Commit:** fix: ensure proxy credentials provisioned before tagging cron starts
-**Branch:** oz/email-restructure-automation
-
-**What changed:**
-- Reordered `POST /tagging/enable` to provision proxy credentials BEFORE creating the cron job
-- Added `provisionOpenClawGoogleProxy(userId, { force: true })` call in the enable flow — this writes `JARVIS_GOOGLE_PROXY_TOKEN` and `JARVIS_GOOGLE_PROXY_URL` to `~/.openclaw/.env` on the OpenClaw host
-- Added early Google OAuth pre-check (`getTokensForProvider`) before any provisioning or cron work
-- Removed `buildTaggingSkillMd()` function and all SKILL.md deployment code from the enable flow (no skill creation per constraint — assume `jarvis-email-tagging` already exists)
-- Removed unused `config` import from `email.ts`
+- **SavedAgenda Prisma model**: New model with `@@unique([userId, date])` for idempotent upserts. Fields: `items` (JSON-serialized AgendaItem[]), `raw` (fallback text), `eventCount`, `taskCount`, timestamps. Cascade-deletes with User.
+- **GET `/calendar/agenda?date=YYYY-MM-DD`**: New endpoint to retrieve a saved agenda by date. Returns parsed items + `savedAt` timestamp, or `null` if no saved agenda exists.
+- **POST `/calendar/build-agenda` now accepts `{ date }` param**: Builds agenda for arbitrary dates (not just today). Fetches events for the target date via refactored `fetchCalendarEventsForDate()`. AI prompt says "The schedule date is..." for future dates. **Persists result** via `prisma.savedAgenda.upsert()` after generation.
+- **`fetchCalendarEventsForDate(userId, targetDate)` refactor**: Extracted from `fetchCalendarEvents()` to support building agendas for any date. Original wrapper still works for existing callers.
+- **AIAgenda.tsx Today/Tomorrow toggle**: Pill-style toggle in header (matching CalendarView style). Computes `dateKey` (YYYY-MM-DD) from selection. Auto-loads saved agenda via `useQuery(["saved-agenda", dateKey])` on mount/toggle. Shows "Generated [time]" indicator. Button text adapts: "Rebuild" when agenda exists, "Build Tomorrow's Agenda" for tomorrow. Empty state text contextual for tomorrow.
 
 **Why:**
-- The tagging cron job was failing at runtime because `JARVIS_GOOGLE_PROXY_URL` and `JARVIS_GOOGLE_PROXY_TOKEN` env vars were never written to `~/.openclaw/.env`. The enable flow created the cron job and deployed SKILL.md but never called `provisionOpenClawGoogleProxy()` — the only code path that writes these credentials. The agent couldn't authenticate to the proxy endpoints. Fix ensures provisioning happens first, and fails fast with a clear error if Google isn't connected.
+- AI agenda was lost on every page refresh — users had to rebuild each time. Persisting to the DB makes the generated agenda durable and instantly available on revisit.
+- Pre-building tomorrow's agenda lets users prepare the night before, seeing what's coming up without waiting until the next morning.
 
 **Files touched:**
-- `server/src/routes/email.ts` — MODIFIED: removed `buildTaggingSkillMd()`, removed SKILL.md deploy/patch code, added proxy provisioning + Google pre-check, removed unused `config` import
+- `server/prisma/schema.prisma` — Added `SavedAgenda` model + User relation
+- `server/src/routes/calendar.ts` — Added GET `/agenda`, refactored `fetchCalendarEvents` → `fetchCalendarEventsForDate`, modified POST `/build-agenda` to accept date + persist
+- `client/components/calendar/AIAgenda.tsx` — Today/Tomorrow toggle, auto-load via useQuery, "Generated at" indicator, contextual empty state
 
 ---
 
-## 2026-02-09 — Fix tagging skill 404 contract mismatch for proxy endpoints
+## 2026-02-10 — Calendar 2-way sync, Sync button, error banners, debug logging, EmailList hydration fix
 
-**Author:** Omid (via Claude Code)
-**Commit:** fix: deploy exact SKILL.md for email tagging, add /tagging/sync alias
-**Branch:** oz/email-restructure-automation
+**Author:** Nick (via Claude Code)
+**Commit:** feat: calendar 2-way sync with Sync button, error banners, and debug logging
+**Branch:** main
 
 **What changed:**
-- Replaced vague `agentExec` SKILL.md prompt in `email.ts` enable flow with exact SKILL.md content containing precise endpoint paths, request/response schemas, and step-by-step workflow instructions
-- Added `buildTaggingSkillMd(proxyUrl)` function that generates a complete SKILL.md with auth, base URL, and all 6 workflow steps documented
-- Added `POST /tagging/sync` alias endpoint in `gmail-proxy.ts` — identical to `POST /tagging/results` for skill compatibility
-- Updated `jarvis-google` SKILL.md template in `openclaw-google-proxy.service.ts` to include tagging endpoints section
-- Enable flow now also patches the existing `jarvis-google` SKILL.md on the OpenClaw host to add tagging endpoint docs
-- Added `config` import to `email.ts` for `oauthBaseUrl`/`port` resolution in SKILL.md URLs
+- **Sync button with status banner**: Sync button triggers POST `/sync` (10 days past, 100 days future), then refetches the current view. A green success banner shows "Synced N events from Google. Showing M in current view." for 5 seconds. Error banner shows failures for 8 seconds.
+- **POST `/calendar/sync` endpoint**: Fetches all events from connected providers over wide date range, returns event count and events.
+- **Calendar error surfacing**: GET `/events` now collects per-provider errors and returns them in an `errors` array. CalendarView renders an amber warning banner when provider errors occur.
+- **Date-only timezone fix**: `parseEventDate()` helper parses `"2026-02-09"` as local midnight instead of UTC (which shifted dates backwards in western timezones). Applied to all 9 date parsing sites across MonthView, WeekView, DayView.
+- **WeekView all-day events row**: Added "ALL DAY" row between header and time slots to display all-day events (previously filtered out with no fallback).
+- **All-day end date fix**: Google Calendar API treats `end.date` as exclusive — single-day all-day events now add 1 day to the end date in both POST and PATCH.
+- **RFC3339 normalization**: `normalizeDateTime()` appends `:00` seconds to datetime strings like `"2025-01-15T14:00"` for Google API compliance.
+- **Debug logging**: Verbose server logs for GET `/events`, POST `/events`, POST `/sync`, and Google API responses (event titles, IDs, ranges). Client-side console logging in CalendarView query and EventModal mutations.
+- **EventModal error feedback**: `onError` handler shows `alert()` on creation failure. Console logging for submit flow.
+- **EmailList hydration fix**: Moved tag buttons outside the parent `<button>` element to fix React nested-button hydration error. Tag controls now use absolute positioning.
+- **maxResults bumped**: Google Calendar API `maxResults` increased from 100 to 250.
 
 **Why:**
-- The OpenClaw cron job was hitting 404 on tagging sync endpoints because the SKILL.md deployed via vague agentExec had wrong endpoint paths. `GET /tagging/config` worked but the agent tried non-existent sync paths. All 100 emails failed because the skill refused to apply Gmail labels without being able to persist results to Jarvis UI. Fix deploys exact endpoint documentation so the agent calls the correct paths.
+- Events created from Jarvis were going to Google Calendar but the UI wasn't displaying them reliably. Multiple bugs conspired: timezone parsing shifted all-day events to wrong days, WeekView had no all-day rendering path, datetime format lacked required seconds, and error responses were silently swallowed. The Sync button gives users manual control over syncing with visual confirmation.
+- EmailList had a React hydration error from nesting `<button>` inside `<button>`.
 
 **Files touched:**
-- `server/src/routes/email.ts` — MODIFIED: added `buildTaggingSkillMd()`, replaced vague skill deploy with exact content, added jarvis-google skill patch, added `config` import
-- `server/src/routes/gmail-proxy.ts` — MODIFIED: added `POST /tagging/sync` alias endpoint
-- `server/src/services/openclaw-google-proxy.service.ts` — MODIFIED: added tagging endpoints to `buildGoogleSkillMd()` template
+- `server/src/routes/calendar.ts` — MODIFIED: added normalizeDateTime, POST `/sync`, error collection, all-day end-date fix, verbose logging, maxResults 250
+- `client/components/calendar/CalendarView.tsx` — MODIFIED: added parseEventDate, Sync button + handler, sync status banner, error banner, all-day WeekView row, query logging
+- `client/components/calendar/EventModal.tsx` — MODIFIED: added onError alert, console logging in mutation and submit
+- `client/components/email/EmailList.tsx` — MODIFIED: moved tag buttons outside parent button, absolute positioning
 
 ---
 
-## 2026-02-09 — Replace email auto-tagging with OpenClaw-native cron workflow
+## 2026-02-09 — Add Calendar Sync button + server-side sync endpoint
 
-**Author:** Omid (via Claude Code)
-**Commit:** feat: replace email auto-tagging with OpenClaw cron workflow
-**Branch:** oz/email-restructure-automation
+**Author:** Nick (via Claude Code)
+**Commit:** feat: add calendar Sync button with POST /sync endpoint
+**Branch:** main
 
 **What changed:**
-- Added `TaggingSchedule` Prisma model to track per-user cron state, mode (backfill/incremental), checkpoint, and run status
-- Added `GET /tagging/config` and `POST /tagging/results` proxy-authenticated endpoints in `gmail-proxy.ts` for the OpenClaw agent to read tag definitions and report classification results
-- Replaced old `POST /auto-tag` and `GET /auto-tag/status` endpoints in `email.ts` with 4 new JWT-authenticated endpoints: `GET /tagging/status`, `POST /tagging/enable`, `POST /tagging/disable`, `POST /tagging/run`
-- Deleted `email-intelligence.service.ts` entirely — all email classification now handled by the OpenClaw agent via cron
-- Updated `TagManager.tsx`: replaced "Re-tag All" button and polling progress bar with an ON/OFF toggle switch, "Run Now" button, and compact status line showing mode, last run time, and status
-- Removed `autoTagJobs` in-memory Map, `AutoTagJob` interface, `retagAllEmails` import, and `AutomationNotConfiguredError` import from email routes
-- Updated CLAUDE.md with Email Auto-Tagging architecture section, `TaggingSchedule` in database docs, updated route map
+- **Sync button**: Added a "Sync" button with rotating `RefreshCw` icon in the CalendarView controls bar, next to "New Event". Triggers a server-side sync covering 10 days past through 100 days future.
+- **POST `/calendar/sync` endpoint**: New server endpoint that fetches events from all connected providers (Google/Microsoft) over a wide date range (-10d to +100d) with detailed console logging. Returns event count, events array, and any provider errors.
+- **Query invalidation**: After sync completes, all `calendar-events` React Query cache entries are invalidated, forcing a fresh refetch for the current view range.
 
 **Why:**
-- The old auto-tagging used `automationExec()` — serial HTTP calls per email from the Jarvis server, requiring separate "Automation AI" config. This was slow, tagged only in Jarvis DB (no Gmail label sync), used in-memory job tracking (lost on restart), and was manual-trigger only. The new OpenClaw cron approach runs every 30 minutes autonomously, reads tags from Jarvis, classifies emails using the full OpenClaw agent (with access to all skills), applies Gmail labels directly, reports results back, and auto-promotes from backfill to incremental mode.
+- Users needed a way to manually force-sync between Jarvis and Google Calendar. The 5-minute auto-refetch interval was too slow to confirm that events created from either side were syncing properly. The Sync button gives immediate feedback.
 
 **Files touched:**
-- `server/prisma/schema.prisma` — MODIFIED: added `TaggingSchedule` model + `User` relation
-- `server/src/routes/gmail-proxy.ts` — MODIFIED: added `GET /tagging/config`, `POST /tagging/results`, prisma import
-- `server/src/routes/email.ts` — MODIFIED: removed old auto-tag code, added `agentExec`/`hasCronMethods` helpers, added 4 tagging management endpoints, updated imports
-- `server/src/services/email-intelligence.service.ts` — DELETED
-- `client/components/email/TagManager.tsx` — MODIFIED: replaced Re-tag All with ON/OFF toggle + Run Now + status line
-- `CLAUDE.md` — MODIFIED: added Email Auto-Tagging section, updated DB models, route map, gotchas
-- `CHANGES.md` — MODIFIED: added this entry
+- `server/src/routes/calendar.ts` — MODIFIED: added POST `/sync` route with wide-range fetch and logging
+- `client/components/calendar/CalendarView.tsx` — MODIFIED: added `RefreshCw` import, `useQueryClient`, sync state, `handleSync` handler, Sync button in controls bar
 
 ---
 
-## 2026-02-09 — Add inline AI Enhance button to custom workflow builder
+## 2026-02-09 — Fix all-day events invisible in WeekView + timezone parsing bug
 
-**Author:** Omid (via Claude Code)
-**Commit:** feat: inline AI Enhance button in custom workflow description
-**Branch:** oz/email-restructure-automation
+**Author:** Nick (via Claude Code)
+**Commit:** fix: calendar WeekView all-day events row + date-only timezone parsing
+**Branch:** main
 
 **What changed:**
-- Added small "AI Enhance" button inside the workflow description textarea (bottom-right corner) in `CustomWorkflowBuilder.tsx`. Uses `POST /automation/assist` to lightly polish the user's existing text — fixes grammar, adds clarity, keeps same length and tone. Replaces text in-place with no separate suggestion panel.
+- **WeekView all-day events row**: Added a dedicated "ALL DAY" row at the top of the WeekView grid (below the header) to display all-day events. Previously, WeekView filtered out all-day events entirely (`if (e.allDay) return false`) with no fallback display — they were invisible in week view.
+- **Date-only timezone parsing fix**: Added `parseEventDate()` helper that parses date-only strings (e.g., `"2026-02-09"`) as local midnight instead of UTC midnight. `new Date("2026-02-09")` interprets as UTC, which shifts the date backwards in western timezones (e.g., becomes Feb 8 at 5 PM MST). This caused all-day events to appear on the wrong day or not appear at all in all three views (Month, Week, Day).
+- Replaced all `new Date(e.start)` / `new Date(evt.start)` / `new Date(evt.end)` calls in CalendarView.tsx with `parseEventDate()` (9 occurrences across MonthView, WeekView, and DayView).
 
 **Why:**
-- Users writing workflow descriptions benefit from a quick polish without leaving the form. The button is seamless and non-intrusive, matching the pattern used in ComposeTab.
+- All-day events were completely invisible in WeekView (no rendering path existed for them).
+- All-day events appeared on the wrong calendar day for users in non-UTC timezones due to JavaScript's date-only string parsing behavior. Since most of the user's test events were all-day events, the calendar appeared completely empty.
 
 **Files touched:**
-- `client/components/workflows/CustomWorkflowBuilder.tsx` — Added `Sparkles` import, `aiHelp` mutation, inline button + error display
+- `client/components/calendar/CalendarView.tsx` — MODIFIED: added `parseEventDate()` helper, all-day events row in WeekView, replaced all date parsing with timezone-safe version
+
+---
+
+## 2026-02-09 — Fix calendar sync: datetime normalization, all-day events, error surfacing
+
+**Author:** Nick (via Claude Code)
+**Commit:** fix: calendar sync — normalize datetimes, fix all-day end date, surface API errors
+**Branch:** main
+
+**What changed:**
+- **Root cause identified**: Google Calendar API was not enabled in the Google Cloud Console project. Server logs showed `Google Calendar API has not been used in project 353672274843 before or it is disabled`. User enabled the API.
+- **Datetime normalization**: Added `normalizeDateTime()` helper to append `:00` seconds to `datetime-local` values (e.g., `2025-01-15T14:00` → `2025-01-15T14:00:00`) for RFC3339 compliance. Applied to POST and PATCH event routes.
+- **All-day event end date fix**: Google Calendar API treats `end.date` as exclusive. Single-day all-day events need end = start + 1 day. Fixed in both POST and PATCH routes to auto-bump end date when it equals or precedes start.
+- **Error surfacing**: GET `/events` now collects fetch errors into an `errors[]` array and includes them in the response alongside events, instead of silently swallowing them.
+- **Error banner in UI**: CalendarView.tsx now displays an amber warning banner when calendar sync errors are returned, showing the actual error message (e.g., "Enable the Calendar API") instead of a silent empty calendar.
+
+**Why:**
+- Calendar events were not syncing between Jarvis and Google Calendar. The primary blocker was the API not being enabled. Additional code bugs (datetime format, all-day end date, silent errors) would have caused issues even after the API was enabled.
+
+**Files touched:**
+- `server/src/routes/calendar.ts` — MODIFIED: added `normalizeDateTime()` helper, fixed all-day end date off-by-one in POST and PATCH, added error collection in GET `/events`
+- `client/components/calendar/CalendarView.tsx` — MODIFIED: added `AlertTriangle` import, `calendarErrors` extraction, amber error banner
+
+---
+
+## 2026-02-09 — Fix nested button hydration error in EmailList
+
+**Author:** Nick (via Claude Code)
+**Commit:** fix: resolve nested button hydration error in EmailList
+**Branch:** main
+
+**What changed:**
+- Restructured `EmailList.tsx` to move tag controls (tag badge button and "Add tag" icon button) from inside the outer email row `<button>` to an absolutely-positioned sibling `<div>`. This eliminates the HTML spec violation where a `<button>` was nested inside another `<button>`, which caused React hydration errors in Next.js.
+- Changed outer button padding from `px-3` to `pl-3 pr-12` to reserve space for the absolutely-positioned tag controls overlay.
+- Upgraded the tag badge from a `<span onClick>` to a proper `<button type="button">` for correct semantics and accessibility.
+- Simplified the snippet area by removing the flex wrapper div (no longer needed with tag controls extracted).
+
+**Why:**
+- The nested `<button>` elements violated HTML spec and caused Next.js hydration mismatch errors on the Email page. The `<span onClick>` for the tag badge was also semantically incorrect and inaccessible.
+
+**Files touched:**
+- `client/components/email/EmailList.tsx` — MODIFIED: restructured tag controls as absolutely-positioned sibling, fixed button nesting and accessibility
 
 ---
 
