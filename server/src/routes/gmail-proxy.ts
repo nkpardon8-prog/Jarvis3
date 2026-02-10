@@ -3,6 +3,7 @@ import { google } from "googleapis";
 import { proxyAuthMiddleware } from "../middleware/proxyAuth";
 import { AuthRequest } from "../types";
 import { getGoogleApiClient } from "../services/oauth.service";
+import { prisma } from "../services/prisma";
 
 const router = Router();
 
@@ -717,6 +718,191 @@ router.get("/docs/:docId", async (req: AuthRequest, res: Response) => {
       res.status(404).json({ ok: false, error: "Document not found" });
       return;
     }
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── GET /tagging/config — Config for OpenClaw tagging agent ──
+
+router.get("/tagging/config", async (req: AuthRequest, res: Response) => {
+  if (!rateLimitGuard(req, res)) return;
+  const userId = req.user!.userId;
+
+  try {
+    const schedule = await prisma.taggingSchedule.findUnique({ where: { userId } });
+
+    if (!schedule || !schedule.enabled) {
+      res.json({ ok: true, data: { enabled: false, mode: "backfill", lastCheckpoint: null, tags: [] } });
+      return;
+    }
+
+    const tags = await prisma.emailTag.findMany({
+      where: { userId },
+      orderBy: { name: "asc" },
+    });
+
+    console.log(`[GmailProxy] GET /tagging/config userId=${userId} tags=${tags.length} mode=${schedule.mode}`);
+
+    res.json({
+      ok: true,
+      data: {
+        enabled: true,
+        mode: schedule.mode,
+        lastCheckpoint: schedule.lastCheckpoint || null,
+        tags: tags.map((t) => ({
+          name: t.name,
+          criteria: t.criteria || t.description || null,
+          color: t.color,
+        })),
+      },
+    });
+  } catch (err: any) {
+    console.error(`[GmailProxy] GET /tagging/config error userId=${userId}:`, err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── POST /tagging/results — Agent reports tagging results ───
+// Also aliased as POST /tagging/sync for skill compatibility
+
+async function handleTaggingResults(userId: string, body: any) {
+  const { status, mode, processed, tagged, skipped, failed, newCheckpoint, results, errors } = body || {};
+
+  if (!status || typeof status !== "string") {
+    return { error: "status is required", statusCode: 400 as const };
+  }
+
+  const normalizedStatus = status === "ok" ? "ok" : status === "noop" ? "noop" : "error";
+
+  // Upsert each tagged result into ProcessedEmail
+  const resultList = Array.isArray(results) ? results : [];
+  let upserted = 0;
+
+  for (const r of resultList) {
+    if (!r.emailId || !r.tagName) continue;
+
+    const tag = await prisma.emailTag.findFirst({
+      where: { userId, name: { equals: r.tagName } },
+    });
+
+    await prisma.processedEmail.upsert({
+      where: { userId_emailId: { userId, emailId: r.emailId } },
+      update: {
+        summary: r.summary || null,
+        tagId: tag?.id || null,
+        tagName: r.tagName,
+        processedAt: new Date(),
+      },
+      create: {
+        userId,
+        emailId: r.emailId,
+        provider: "google",
+        summary: r.summary || null,
+        tagId: tag?.id || null,
+        tagName: r.tagName,
+      },
+    });
+    upserted++;
+  }
+
+  const schedule = await prisma.taggingSchedule.findUnique({ where: { userId } });
+  const effectiveMode = schedule?.mode || (mode === "incremental" ? "incremental" : "backfill");
+  const promoteToIncremental =
+    effectiveMode === "backfill" && (normalizedStatus === "ok" || normalizedStatus === "noop");
+
+  const runSummary = JSON.stringify({
+    mode: effectiveMode,
+    processed,
+    tagged,
+    skipped,
+    failed,
+    errors: Array.isArray(errors) ? errors : [],
+  });
+
+  const updateData: any = {
+    lastRunAt: new Date(),
+    lastRunStatus: normalizedStatus,
+    lastRunSummary: runSummary,
+    errorMessage: normalizedStatus === "error" && Array.isArray(errors) ? errors.join("; ") : null,
+  };
+
+  if (newCheckpoint) {
+    updateData.lastCheckpoint = newCheckpoint;
+  }
+
+  if (promoteToIncremental) {
+    updateData.mode = "incremental";
+  }
+
+  await prisma.taggingSchedule.upsert({
+    where: { userId },
+    update: updateData,
+    create: {
+      userId,
+      enabled: false,
+      mode: promoteToIncremental ? "incremental" : effectiveMode,
+      ...(newCheckpoint ? { lastCheckpoint: newCheckpoint } : {}),
+      lastRunAt: new Date(),
+      lastRunStatus: normalizedStatus,
+      lastRunSummary: runSummary,
+      errorMessage: normalizedStatus === "error" && Array.isArray(errors) ? errors.join("; ") : null,
+    },
+  });
+
+  return {
+    data: {
+      upserted,
+      modeBeforeRun: effectiveMode,
+      modeAfterRun: promoteToIncremental ? "incremental" : effectiveMode,
+      promotedToIncremental: promoteToIncremental,
+      status: normalizedStatus,
+    },
+    statusCode: 200 as const,
+  };
+}
+
+router.post("/tagging/results", async (req: AuthRequest, res: Response) => {
+  if (!rateLimitGuard(req, res)) return;
+  const userId = req.user!.userId;
+
+  try {
+    const handled = await handleTaggingResults(userId, req.body);
+    if ("error" in handled) {
+      res.status(handled.statusCode).json({ ok: false, error: handled.error });
+      return;
+    }
+
+    console.log(
+      `[GmailProxy] POST /tagging/results userId=${userId} status=${handled.data.status} upserted=${handled.data.upserted} promoted=${handled.data.promotedToIncremental}`
+    );
+    res.json({ ok: true, data: handled.data });
+  } catch (err: any) {
+    console.error(`[GmailProxy] POST /tagging/results error userId=${userId}:`, err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── POST /tagging/sync — Alias for /tagging/results ─────────
+// Some skill versions may call /tagging/sync instead of /tagging/results.
+// This handler delegates to the same logic.
+
+router.post("/tagging/sync", async (req: AuthRequest, res: Response) => {
+  if (!rateLimitGuard(req, res)) return;
+  const userId = req.user!.userId;
+
+  try {
+    const handled = await handleTaggingResults(userId, req.body);
+    if ("error" in handled) {
+      res.status(handled.statusCode).json({ ok: false, error: handled.error });
+      return;
+    }
+
+    console.log(
+      `[GmailProxy] POST /tagging/sync userId=${userId} status=${handled.data.status} upserted=${handled.data.upserted} promoted=${handled.data.promotedToIncremental}`
+    );
+    res.json({ ok: true, data: handled.data });
+  } catch (err: any) {
+    console.error(`[GmailProxy] POST /tagging/sync error userId=${userId}:`, err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
 });

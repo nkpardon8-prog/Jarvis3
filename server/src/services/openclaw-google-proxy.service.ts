@@ -93,6 +93,12 @@ Compatibility alias: \`${proxyUrl}/api/gmail-proxy\`
 - \`GET /drive/search\` — full-text search
 - \`GET /docs/:docId\` — read Google Doc text
 
+## Email Tagging (used by jarvis-email-tagging skill)
+
+- \`GET /tagging/config\` — read tag definitions, mode (backfill/incremental), and checkpoint
+- \`POST /tagging/results\` — report classification results back to Jarvis (upserts tag assignments)
+- \`POST /tagging/sync\` — alias for /tagging/results
+
 ## Response format
 
 All endpoints return \`{ ok: boolean, data?: T, error?: string }\`.

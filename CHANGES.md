@@ -4,6 +4,108 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-09 — Root-cause fix: tagging cron auth failure, token rotation desync, stuck UI
+
+**Author:** Omid (via Claude Code)
+**Commit:** fix: self-contained cron prompt, skip needless token rotation, UI staleness detection
+**Branch:** oz/email-restructure-automation
+
+**What changed:**
+- Rewrote `buildTaggingPrompt()` from a 1-sentence delegation stub into a self-contained ~60-line prompt with: explicit `~/.openclaw/.env` sourcing instructions, embedded proxy base URL, full step-by-step workflow (5 steps: read config, fetch emails, classify, apply Gmail labels, report results), exact endpoint paths, auth header format, error handling, and response format
+- Added `getProxyUrl()` helper to resolve proxy URL from `config.oauthBaseUrl` (production-safe)
+- Rewrote enable flow provisioning: now checks `ProxyProvisionStatus` + `ProxyApiToken` directly and SKIPS provisioning if already successful — avoids force-rotating the token which desynced DB hash from .env plaintext causing persistent 401s
+- If provisioning actually fails during enable, returns error immediately instead of creating an orphaned cron job
+- Added `config` import back to email.ts for proxy URL resolution
+- Fixed `TagManager.tsx` stuck "Backfill starting..." state: after 5 minutes with no run, shows "First run may have failed — try Run Now" in error color instead of infinite amber spinner
+
+**Root cause analysis:**
+1. **Cron prompt was a thin delegation stub** — "Run the jarvis-email-tagging skill now" (1 sentence). Isolated cron sessions do NOT auto-source `~/.openclaw/.env`, so the agent couldn't resolve `JARVIS_GOOGLE_PROXY_TOKEN` or `JARVIS_GOOGLE_PROXY_URL`. Working workflow templates use 500+ word self-contained prompts.
+2. **Enable flow force-rotated token every time** — `provisionOpenClawGoogleProxy(force: true)` always generates a new token+hash. If the LLM-based .env write via agentExec didn't execute perfectly, the DB hash and .env plaintext desynced → every proxy call returned 401.
+3. **UI had no staleness detection** — showed "Backfill starting..." forever when cron failed before calling POST /tagging/results (which is exactly what happens on auth failures).
+
+**Files touched:**
+- `server/src/routes/email.ts` — MODIFIED: rewrote `buildTaggingPrompt()`, added `getProxyUrl()`, smart provisioning check in enable flow, proxyUrl passed to prompt in run endpoint, re-added `config` import
+- `client/components/email/TagManager.tsx` — MODIFIED: staleness detection replaces infinite "Backfill starting..." with error hint after 5 min
+- `CHANGES.md` — MODIFIED: added this entry
+
+**SKILL.md files changed: NONE** — no skill files were created, modified, or deployed.
+
+---
+
+## 2026-02-09 — Fix missing proxy env vars in tagging enable flow
+
+**Author:** Omid (via Claude Code)
+**Commit:** fix: ensure proxy credentials provisioned before tagging cron starts
+**Branch:** oz/email-restructure-automation
+
+**What changed:**
+- Reordered `POST /tagging/enable` to provision proxy credentials BEFORE creating the cron job
+- Added `provisionOpenClawGoogleProxy(userId, { force: true })` call in the enable flow — this writes `JARVIS_GOOGLE_PROXY_TOKEN` and `JARVIS_GOOGLE_PROXY_URL` to `~/.openclaw/.env` on the OpenClaw host
+- Added early Google OAuth pre-check (`getTokensForProvider`) before any provisioning or cron work
+- Removed `buildTaggingSkillMd()` function and all SKILL.md deployment code from the enable flow (no skill creation per constraint — assume `jarvis-email-tagging` already exists)
+- Removed unused `config` import from `email.ts`
+
+**Why:**
+- The tagging cron job was failing at runtime because `JARVIS_GOOGLE_PROXY_URL` and `JARVIS_GOOGLE_PROXY_TOKEN` env vars were never written to `~/.openclaw/.env`. The enable flow created the cron job and deployed SKILL.md but never called `provisionOpenClawGoogleProxy()` — the only code path that writes these credentials. The agent couldn't authenticate to the proxy endpoints. Fix ensures provisioning happens first, and fails fast with a clear error if Google isn't connected.
+
+**Files touched:**
+- `server/src/routes/email.ts` — MODIFIED: removed `buildTaggingSkillMd()`, removed SKILL.md deploy/patch code, added proxy provisioning + Google pre-check, removed unused `config` import
+
+---
+
+## 2026-02-09 — Fix tagging skill 404 contract mismatch for proxy endpoints
+
+**Author:** Omid (via Claude Code)
+**Commit:** fix: deploy exact SKILL.md for email tagging, add /tagging/sync alias
+**Branch:** oz/email-restructure-automation
+
+**What changed:**
+- Replaced vague `agentExec` SKILL.md prompt in `email.ts` enable flow with exact SKILL.md content containing precise endpoint paths, request/response schemas, and step-by-step workflow instructions
+- Added `buildTaggingSkillMd(proxyUrl)` function that generates a complete SKILL.md with auth, base URL, and all 6 workflow steps documented
+- Added `POST /tagging/sync` alias endpoint in `gmail-proxy.ts` — identical to `POST /tagging/results` for skill compatibility
+- Updated `jarvis-google` SKILL.md template in `openclaw-google-proxy.service.ts` to include tagging endpoints section
+- Enable flow now also patches the existing `jarvis-google` SKILL.md on the OpenClaw host to add tagging endpoint docs
+- Added `config` import to `email.ts` for `oauthBaseUrl`/`port` resolution in SKILL.md URLs
+
+**Why:**
+- The OpenClaw cron job was hitting 404 on tagging sync endpoints because the SKILL.md deployed via vague agentExec had wrong endpoint paths. `GET /tagging/config` worked but the agent tried non-existent sync paths. All 100 emails failed because the skill refused to apply Gmail labels without being able to persist results to Jarvis UI. Fix deploys exact endpoint documentation so the agent calls the correct paths.
+
+**Files touched:**
+- `server/src/routes/email.ts` — MODIFIED: added `buildTaggingSkillMd()`, replaced vague skill deploy with exact content, added jarvis-google skill patch, added `config` import
+- `server/src/routes/gmail-proxy.ts` — MODIFIED: added `POST /tagging/sync` alias endpoint
+- `server/src/services/openclaw-google-proxy.service.ts` — MODIFIED: added tagging endpoints to `buildGoogleSkillMd()` template
+
+---
+
+## 2026-02-09 — Replace email auto-tagging with OpenClaw-native cron workflow
+
+**Author:** Omid (via Claude Code)
+**Commit:** feat: replace email auto-tagging with OpenClaw cron workflow
+**Branch:** oz/email-restructure-automation
+
+**What changed:**
+- Added `TaggingSchedule` Prisma model to track per-user cron state, mode (backfill/incremental), checkpoint, and run status
+- Added `GET /tagging/config` and `POST /tagging/results` proxy-authenticated endpoints in `gmail-proxy.ts` for the OpenClaw agent to read tag definitions and report classification results
+- Replaced old `POST /auto-tag` and `GET /auto-tag/status` endpoints in `email.ts` with 4 new JWT-authenticated endpoints: `GET /tagging/status`, `POST /tagging/enable`, `POST /tagging/disable`, `POST /tagging/run`
+- Deleted `email-intelligence.service.ts` entirely — all email classification now handled by the OpenClaw agent via cron
+- Updated `TagManager.tsx`: replaced "Re-tag All" button and polling progress bar with an ON/OFF toggle switch, "Run Now" button, and compact status line showing mode, last run time, and status
+- Removed `autoTagJobs` in-memory Map, `AutoTagJob` interface, `retagAllEmails` import, and `AutomationNotConfiguredError` import from email routes
+- Updated CLAUDE.md with Email Auto-Tagging architecture section, `TaggingSchedule` in database docs, updated route map
+
+**Why:**
+- The old auto-tagging used `automationExec()` — serial HTTP calls per email from the Jarvis server, requiring separate "Automation AI" config. This was slow, tagged only in Jarvis DB (no Gmail label sync), used in-memory job tracking (lost on restart), and was manual-trigger only. The new OpenClaw cron approach runs every 30 minutes autonomously, reads tags from Jarvis, classifies emails using the full OpenClaw agent (with access to all skills), applies Gmail labels directly, reports results back, and auto-promotes from backfill to incremental mode.
+
+**Files touched:**
+- `server/prisma/schema.prisma` — MODIFIED: added `TaggingSchedule` model + `User` relation
+- `server/src/routes/gmail-proxy.ts` — MODIFIED: added `GET /tagging/config`, `POST /tagging/results`, prisma import
+- `server/src/routes/email.ts` — MODIFIED: removed old auto-tag code, added `agentExec`/`hasCronMethods` helpers, added 4 tagging management endpoints, updated imports
+- `server/src/services/email-intelligence.service.ts` — DELETED
+- `client/components/email/TagManager.tsx` — MODIFIED: replaced Re-tag All with ON/OFF toggle + Run Now + status line
+- `CLAUDE.md` — MODIFIED: added Email Auto-Tagging section, updated DB models, route map, gotchas
+- `CHANGES.md` — MODIFIED: added this entry
+
+---
+
 ## 2026-02-09 — Add inline AI Enhance button to custom workflow builder
 
 **Author:** Omid (via Claude Code)

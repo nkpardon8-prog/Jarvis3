@@ -287,13 +287,14 @@ Fields: `id`, `templateId`, `name`, `status` (setting-up/active/paused/error), `
 
 ## Database (Prisma/SQLite)
 
-Models: `User`, `Todo`, `EmailTag`, `EmailSettings`, `CrmSettings`, `OAuthToken`, `OAuthCredential`, `Notification`, `OnboardingProgress`, `ProxyApiToken`, `ProxyProvisionStatus`
+Models: `User`, `Todo`, `EmailTag`, `EmailSettings`, `CrmSettings`, `OAuthToken`, `OAuthCredential`, `Notification`, `OnboardingProgress`, `ProxyApiToken`, `ProxyProvisionStatus`, `TaggingSchedule`
 
 Key relationships:
 - `OAuthToken` has `@@unique([userId, provider])` — one token per provider per user
 - `OAuthCredential` has `@@unique([userId, provider])` — one credential set per provider per user (clientSecret encrypted)
 - `ProxyApiToken` has `@@unique` on `userId` — one proxy token per user (tokenHash stored, plaintext never persisted)
 - `ProxyProvisionStatus` has `@@unique` on `userId` — tracks provisioning state (pending/success/failed) with structured error codes and timestamps
+- `TaggingSchedule` has `@@unique` on `userId` — one tagging schedule per user, tracks cron job state + checkpoint for incremental mode
 - All models cascade delete from User
 
 Run migrations: `cd server && npx prisma db push`
@@ -426,6 +427,54 @@ Three trigger points ensure existing users get provisioned:
 - Revocation — DELETE token → immediate access removal, skill becomes non-functional
 - No secrets in logs — provisioning logs method + path + userId only
 
+## Email Auto-Tagging (OpenClaw Cron)
+
+Email auto-tagging is handled by an OpenClaw cron job that runs every 30 minutes. The OpenClaw agent reads tag definitions, classifies emails, applies Gmail labels, and reports results — all via the existing Gmail proxy endpoints. No direct LLM API calls from the Jarvis server.
+
+### Architecture
+
+```
+Cron trigger (every 30 min)
+  → OpenClaw agent reads jarvis-email-tagging SKILL.md
+  → GET /tagging/config (proxy auth) — tags + mode + checkpoint
+  → GET /messages (proxy auth) — fetch emails
+  → Agent classifies emails against tag criteria
+  → POST /messages/modify (proxy auth) — apply Gmail labels
+  → POST /tagging/results (proxy auth) — report results back to Jarvis
+  → TaggingSchedule row updated with checkpoint + status
+```
+
+### Mode Progression
+
+- **backfill**: First run processes all recent emails. On success, auto-promotes to incremental.
+- **incremental**: Subsequent runs only process emails after `lastCheckpoint`.
+
+### Endpoints
+
+**Proxy-authenticated (called by OpenClaw agent):**
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/tagging/config` | Tag definitions, mode, checkpoint |
+| `POST` | `/tagging/results` | Agent reports classification results |
+
+**JWT-authenticated (called by Jarvis UI):**
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/tagging/status` | Current schedule state |
+| `POST` | `/tagging/enable` | Create cron job, enable tagging |
+| `POST` | `/tagging/disable` | Remove cron job, disable tagging |
+| `POST` | `/tagging/run` | Manual trigger (force run) |
+
+### TaggingSchedule Model
+
+Fields: `id`, `userId` (unique), `enabled`, `cronJobName`, `cronJobId`, `mode` (backfill/incremental), `lastCheckpoint`, `lastRunAt`, `lastRunStatus` (ok/error/noop), `lastRunSummary` (JSON), `errorMessage`, `createdAt`, `updatedAt`.
+
+### Client UI
+
+The TagManager component replaces the old "Re-tag All" button with an ON/OFF toggle switch. When enabled, shows mode (backfill/incremental), last run time, status, and a "Run Now" button for manual triggers.
+
 ## Socket.io Events
 
 | Direction | Event | Purpose |
@@ -452,8 +501,8 @@ Three trigger points ensure existing users get provisioned:
 | `/api/skills` | routes/skills.ts | List, install, update, hub search |
 | `/api/todos` | routes/todos.ts | CRUD for todos |
 | `/api/calendar` | routes/calendar.ts | Events (Google/Microsoft), build-agenda |
-| `/api/email` | routes/email.ts | Status, inbox (Gmail/Outlook), tags, settings, proxy token CRUD + deploy, provisioning status |
-| `/api/gmail-proxy` | routes/gmail-proxy.ts | Google proxy for OpenClaw (Gmail, Calendar, Drive — bearer token auth) |
+| `/api/email` | routes/email.ts | Status, inbox (Gmail/Outlook), tags, settings, proxy token CRUD + deploy, provisioning status, tagging enable/disable/status/run |
+| `/api/gmail-proxy` | routes/gmail-proxy.ts | Google proxy for OpenClaw (Gmail, Calendar, Drive, tagging config/results — bearer token auth) |
 | `/api/google-proxy` | routes/gmail-proxy.ts | Alias for `/api/gmail-proxy` |
 | `/api/crm` | routes/crm.ts | CRM features |
 | `/api/oauth` | routes/oauth.ts | OAuth URLs, callbacks, status, disconnect, store-credentials |
@@ -638,6 +687,7 @@ End-user flow on web:
 - **No .env in git** — Root and server `.gitignore` both exclude `.env`, `*.db`, `node_modules/`, `.claude/`
 - **Socket.io connect errors** — Uses `console.warn` (not `console.error`) to avoid Next.js dev error overlay on transient connection failures
 - **Session key format** — `agent:<defaultAgentId>:<mainKey>` (typically `agent:main:main`), derived from `gateway.sessionDefaults`
+- **Email auto-tagging** — Runs via OpenClaw cron (every 30 min), NOT via direct LLM calls from Jarvis. The agent reads tag config from `/tagging/config`, classifies emails, applies Gmail labels via `/messages/modify`, and posts results to `/tagging/results`. Mode auto-promotes from `backfill` → `incremental` after first successful run. `email-intelligence.service.ts` was deleted — all classification happens in the OpenClaw agent.
 
 ## GitHub
 

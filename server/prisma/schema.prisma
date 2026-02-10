@@ -37,6 +37,7 @@ model User {
   drafts              Draft[]
   proxyApiToken       ProxyApiToken?
   proxyProvisionStatus ProxyProvisionStatus?
+  taggingSchedule     TaggingSchedule?
 }
 
 model Todo {
@@ -304,6 +305,24 @@ model ProxyProvisionStatus {
   lastSuccessAt  DateTime?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model TaggingSchedule {
+  id              String   @id @default(uuid())
+  userId          String   @unique
+  enabled         Boolean  @default(false)
+  cronJobName     String?
+  cronJobId       String?
+  mode            String   @default("backfill") // "backfill" | "incremental"
+  lastCheckpoint  String?  // Email date/timestamp for incremental mode
+  lastRunAt       DateTime?
+  lastRunStatus   String?  // "ok" | "error" | "noop"
+  lastRunSummary  String?  // JSON of last run result
+  errorMessage    String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
