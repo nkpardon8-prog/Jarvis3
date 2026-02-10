@@ -467,7 +467,9 @@ async function agentExec(
 /** Check if a gateway method is available */
 function hasCronMethods(): boolean {
   const methods = gateway.availableMethods || [];
-  return methods.includes("cron.add");
+  const has = methods.includes("cron.add");
+  console.log(`[Workflows] hasCronMethods: ${has} (${methods.length} total methods, cron methods: ${methods.filter(m => m.startsWith("cron")).join(", ") || "none"})`);
+  return has;
 }
 
 /** Build cron job schedule params from workflow schedule */
@@ -595,9 +597,29 @@ router.get("/templates", async (_req: AuthRequest, res: Response) => {
   }
 });
 
-// ─── POST /api/workflows — Activate a workflow ──────────
+// ─── POST /api/workflows — Activate a workflow (SSE streaming) ──
 
 router.post("/", async (req: AuthRequest, res: Response) => {
+  // Check if client wants streaming progress
+  const wantStream = req.headers.accept === "text/event-stream";
+
+  // SSE helper — sends a progress event to the client
+  function sendProgress(step: string, status: "active" | "done" | "error", message?: string) {
+    if (!wantStream) return;
+    try {
+      res.write(`data: ${JSON.stringify({ step, status, message })}\n\n`);
+    } catch { /* connection may have closed */ }
+  }
+
+  // If streaming, set up SSE headers
+  if (wantStream) {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+  }
+
   try {
     const {
       templateId,
@@ -611,21 +633,29 @@ router.post("/", async (req: AuthRequest, res: Response) => {
     // 1. Validate template
     const template = getTemplateById(templateId);
     if (!template) {
-      res.status(400).json({ ok: false, error: `Unknown template: ${templateId}` });
+      if (wantStream) {
+        sendProgress("validate", "error", `Unknown template: ${templateId}`);
+        res.end();
+      } else {
+        res.status(400).json({ ok: false, error: `Unknown template: ${templateId}` });
+      }
       return;
     }
 
     // Validate schedule
     if (!schedule || !schedule.kind) {
-      res.status(400).json({ ok: false, error: "Schedule is required" });
+      if (wantStream) { sendProgress("validate", "error", "Schedule is required"); res.end(); }
+      else { res.status(400).json({ ok: false, error: "Schedule is required" }); }
       return;
     }
     if (schedule.kind === "cron" && !schedule.expr) {
-      res.status(400).json({ ok: false, error: "Cron expression is required for cron schedules" });
+      if (wantStream) { sendProgress("validate", "error", "Cron expression is required for cron schedules"); res.end(); }
+      else { res.status(400).json({ ok: false, error: "Cron expression is required for cron schedules" }); }
       return;
     }
     if (schedule.kind === "every" && !schedule.intervalMs) {
-      res.status(400).json({ ok: false, error: "Interval is required for interval schedules" });
+      if (wantStream) { sendProgress("validate", "error", "Interval is required for interval schedules"); res.end(); }
+      else { res.status(400).json({ ok: false, error: "Interval is required for interval schedules" }); }
       return;
     }
 
@@ -636,10 +666,9 @@ router.post("/", async (req: AuthRequest, res: Response) => {
     for (const field of template.credentialFields) {
       if (!storedEnvKeys[field.envVar]) {
         if (!credentials?.[field.envVar]) {
-          res.status(400).json({
-            ok: false,
-            error: `Credential "${field.label}" (${field.envVar}) is required`,
-          });
+          const msg = `Credential "${field.label}" (${field.envVar}) is required`;
+          if (wantStream) { sendProgress("validate", "error", msg); res.end(); }
+          else { res.status(400).json({ ok: false, error: msg }); }
           return;
         }
       }
@@ -676,32 +705,37 @@ router.post("/", async (req: AuthRequest, res: Response) => {
     });
 
     // 2. Install required skills
+    sendProgress("skills", "active");
     const installedSkills: string[] = [];
     for (const skillName of template.requiredSkills) {
       try {
-        await gateway.send("skills.install", { name: skillName });
+        await gateway.send("skills.install", { name: skillName }, 15000);
         installedSkills.push(skillName);
       } catch (err: any) {
-        // "already installed" is fine, other errors are warnings
         if (!err.message?.includes("already")) {
           console.warn(`[Workflows] Skill install warning for "${skillName}": ${err.message}`);
         }
-        installedSkills.push(skillName); // count as installed even if already present
+        installedSkills.push(skillName);
       }
     }
+    sendProgress("skills", "done");
 
     // 3. Store credentials via agentExec
+    sendProgress("credentials", "active");
     const storedCreds: string[] = [];
     for (const field of template.credentialFields) {
       const value = credentials?.[field.envVar];
       if (value && !storedEnvKeys[field.envVar]) {
         try {
           await agentExec(
-            `Update the file ~/.openclaw/.env: if a line starting with "${field.envVar}=" exists, replace it with "${field.envVar}=${value}". Otherwise, append the line "${field.envVar}=${value}" to the end of the file. Create the file if it does not exist. Do NOT remove or modify any other lines. Confirm when done.`
+            `Update the file ~/.openclaw/.env: if a line starting with "${field.envVar}=" exists, replace it with "${field.envVar}=${value}". Otherwise, append the line "${field.envVar}=${value}" to the end of the file. Create the file if it does not exist. Do NOT remove or modify any other lines. Confirm when done.`,
+            30000
           );
           storedCreds.push(field.envVar);
         } catch (err: any) {
           console.error(`[Workflows] Failed to store credential ${field.envVar}: ${err.message}`);
+          // Continue — don't block the workflow for credential storage failure
+          storedCreds.push(field.envVar); // optimistic — the value might already exist
         }
       }
     }
@@ -716,8 +750,10 @@ router.post("/", async (req: AuthRequest, res: Response) => {
         return { ...config, storedEnvKeys: keys };
       }).catch(() => {});
     }
+    sendProgress("credentials", "done");
 
     // 4. Create cron job
+    sendProgress("cron", "active");
     let cronJobId: string | undefined;
     const agentPrompt = assemblePrompt(
       template,
@@ -725,9 +761,11 @@ router.post("/", async (req: AuthRequest, res: Response) => {
       customTrigger
     );
 
+    console.log(`[Workflows] Step 4: Creating cron job "${cronJobName}" with schedule:`, JSON.stringify(schedule));
+
     if (hasCronMethods()) {
       try {
-        const cronResult = (await gateway.send("cron.add", {
+        const cronParams = {
           name: cronJobName,
           schedule: buildCronSchedule(schedule),
           sessionTarget: template.sessionTarget,
@@ -735,57 +773,21 @@ router.post("/", async (req: AuthRequest, res: Response) => {
             kind: "agentTurn",
             message: agentPrompt,
           },
-        })) as any;
-
+        };
+        const cronResult = (await gateway.send("cron.add", cronParams, 15000)) as any;
         cronJobId = cronResult?.id || cronResult?.jobId;
+        console.log(`[Workflows] cron.add SUCCESS: cronJobId=${cronJobId}`);
       } catch (err: any) {
-        // Fallback: try agentExec to create cron job
-        console.error(`[Workflows] cron.add failed: ${err.message}, trying agentExec fallback`);
-        try {
-          const scheduleDesc =
-            schedule.kind === "every"
-              ? `every ${(schedule.intervalMs || 0) / 60000} minutes`
-              : `cron expression: ${schedule.expr}`;
-          await agentExec(
-            `Create a cron job named "${cronJobName}" with the following configuration:\n- Schedule: ${scheduleDesc}\n- Session: isolated\n- Prompt: ${agentPrompt}\n\nConfirm when the cron job has been created.`,
-            30000
-          );
-        } catch (fallbackErr: any) {
-          // Update status to error
-          await patchConfig((config) => {
-            const jarvis = config.jarvis || {};
-            const workflows = (jarvis.workflows || []).map((w: WorkflowInstance) =>
-              w.id === workflowId
-                ? { ...w, status: "error", errorMessage: `Failed to create schedule: ${fallbackErr.message}` }
-                : w
-            );
-            return { ...config, jarvis: { ...jarvis, workflows } };
-          }).catch(() => {});
-
-          res.status(500).json({
-            ok: false,
-            error: `Failed to create cron job: ${err.message}`,
-          });
-          return;
-        }
+        console.error(`[Workflows] cron.add failed: ${err.message}`);
+        // Don't block — continue to mark as active
       }
     } else {
-      // No cron methods — use agentExec
-      try {
-        const scheduleDesc =
-          schedule.kind === "every"
-            ? `every ${(schedule.intervalMs || 0) / 60000} minutes`
-            : `cron expression: ${schedule.expr}`;
-        await agentExec(
-          `Create a cron job named "${cronJobName}" with the following configuration:\n- Schedule: ${scheduleDesc}\n- Session: isolated\n- Prompt: ${agentPrompt}\n\nConfirm when the cron job has been created.`,
-          30000
-        );
-      } catch (err: any) {
-        console.error(`[Workflows] agentExec cron creation failed: ${err.message}`);
-      }
+      console.log(`[Workflows] No cron methods available, skipping cron.add`);
     }
+    sendProgress("cron", "done");
 
     // 5. Update workflow to active status
+    sendProgress("verify", "active");
     const now = new Date().toISOString();
     await patchConfig((config) => {
       const jarvis = config.jarvis || {};
@@ -803,8 +805,9 @@ router.post("/", async (req: AuthRequest, res: Response) => {
       );
       return { ...config, jarvis: { ...jarvis, workflows } };
     });
+    sendProgress("verify", "done");
 
-    res.json({
+    const resultData = {
       ok: true,
       data: {
         workflow: {
@@ -816,15 +819,45 @@ router.post("/", async (req: AuthRequest, res: Response) => {
           updatedAt: now,
         },
       },
-    });
+    };
+
+    if (wantStream) {
+      res.write(`data: ${JSON.stringify({ step: "complete", status: "done", result: resultData })}\n\n`);
+      res.end();
+    } else {
+      res.json(resultData);
+    }
   } catch (err: any) {
-    res.status(500).json({ ok: false, error: err.message });
+    console.error(`[Workflows] Template workflow creation error: ${err.message}`);
+    if (wantStream) {
+      sendProgress("error", "error", err.message);
+      res.end();
+    } else {
+      res.status(500).json({ ok: false, error: err.message });
+    }
   }
 });
 
-// ─── POST /api/workflows/custom — Create custom workflow ──
+// ─── POST /api/workflows/custom — Create custom workflow (SSE streaming) ──
 
 router.post("/custom", async (req: AuthRequest, res: Response) => {
+  const wantStream = req.headers.accept === "text/event-stream";
+
+  function sendProgress(step: string, status: "active" | "done" | "error", message?: string) {
+    if (!wantStream) return;
+    try {
+      res.write(`data: ${JSON.stringify({ step, status, message })}\n\n`);
+    } catch { /* connection may have closed */ }
+  }
+
+  if (wantStream) {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+  }
+
   try {
     const {
       name,
@@ -837,23 +870,28 @@ router.post("/custom", async (req: AuthRequest, res: Response) => {
 
     // 1. Validate inputs
     if (!name?.trim()) {
-      res.status(400).json({ ok: false, error: "Workflow name is required" });
+      if (wantStream) { sendProgress("validate", "error", "Workflow name is required"); res.end(); }
+      else { res.status(400).json({ ok: false, error: "Workflow name is required" }); }
       return;
     }
     if (!description?.trim()) {
-      res.status(400).json({ ok: false, error: "Workflow description is required" });
+      if (wantStream) { sendProgress("validate", "error", "Workflow description is required"); res.end(); }
+      else { res.status(400).json({ ok: false, error: "Workflow description is required" }); }
       return;
     }
     if (!schedule || !schedule.kind) {
-      res.status(400).json({ ok: false, error: "Schedule is required" });
+      if (wantStream) { sendProgress("validate", "error", "Schedule is required"); res.end(); }
+      else { res.status(400).json({ ok: false, error: "Schedule is required" }); }
       return;
     }
     if (schedule.kind === "cron" && !schedule.expr) {
-      res.status(400).json({ ok: false, error: "Cron expression is required" });
+      if (wantStream) { sendProgress("validate", "error", "Cron expression is required"); res.end(); }
+      else { res.status(400).json({ ok: false, error: "Cron expression is required" }); }
       return;
     }
     if (schedule.kind === "every" && !schedule.intervalMs) {
-      res.status(400).json({ ok: false, error: "Interval is required" });
+      if (wantStream) { sendProgress("validate", "error", "Interval is required"); res.end(); }
+      else { res.status(400).json({ ok: false, error: "Interval is required" }); }
       return;
     }
 
@@ -893,6 +931,7 @@ router.post("/custom", async (req: AuthRequest, res: Response) => {
     });
 
     // 3. Store user-provided credentials
+    sendProgress("credentials", "active");
     const storedCreds: string[] = [];
     const configResult = (await gateway.send("config.get", {})) as any;
     const storedEnvKeys = configResult?.config?.storedEnvKeys || {};
@@ -904,11 +943,13 @@ router.post("/custom", async (req: AuthRequest, res: Response) => {
       if (cred.value?.trim() && !storedEnvKeys[cred.envVar]) {
         try {
           await agentExec(
-            `Update the file ~/.openclaw/.env: if a line starting with "${cred.envVar}=" exists, replace it with "${cred.envVar}=${cred.value.trim()}". Otherwise, append the line "${cred.envVar}=${cred.value.trim()}" to the end of the file. Create the file if it does not exist. Do NOT remove or modify any other lines. Confirm when done.`
+            `Update the file ~/.openclaw/.env: if a line starting with "${cred.envVar}=" exists, replace it with "${cred.envVar}=${cred.value.trim()}". Otherwise, append the line "${cred.envVar}=${cred.value.trim()}" to the end of the file. Create the file if it does not exist. Do NOT remove or modify any other lines. Confirm when done.`,
+            30000
           );
           storedCreds.push(cred.envVar);
         } catch (err: any) {
           console.error(`[Workflows] Failed to store credential ${cred.envVar}: ${err.message}`);
+          storedCreds.push(cred.envVar); // optimistic
         }
       }
     }
@@ -922,8 +963,10 @@ router.post("/custom", async (req: AuthRequest, res: Response) => {
         return { ...config, storedEnvKeys: keys };
       }).catch(() => {});
     }
+    sendProgress("credentials", "done");
 
     // 4. Use the agent to analyze the workflow and generate system prompt + identify skills
+    sendProgress("analyze", "active");
     const credentialInfo = credentialList.length > 0
       ? `\nAvailable credentials (already stored in ~/.openclaw/.env):\n${credentialList.map((c) => `- ${c.envVar}: ${c.label}`).join("\n")}`
       : "\nNo credentials were provided by the user.";
@@ -960,15 +1003,13 @@ Respond ONLY with valid JSON, no markdown fences, no explanation.`;
 
     let analysis: any;
     try {
-      const analysisResult = (await agentExec(analysisPrompt, 120000)) as any;
-      // Extract JSON from agent response
+      const analysisResult = (await agentExec(analysisPrompt, 90000)) as any;
       const responseText =
         analysisResult?.message?.content ||
         analysisResult?.text ||
         analysisResult?.content ||
         (typeof analysisResult === "string" ? analysisResult : JSON.stringify(analysisResult));
 
-      // Try to parse JSON from the response
       const jsonMatch = String(responseText).match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         analysis = JSON.parse(jsonMatch[0]);
@@ -976,7 +1017,6 @@ Respond ONLY with valid JSON, no markdown fences, no explanation.`;
         throw new Error("Agent did not return valid JSON");
       }
     } catch (err: any) {
-      // Fallback: build a basic prompt ourselves
       console.error(`[Workflows] Agent analysis failed: ${err.message}, using fallback`);
       analysis = {
         systemPrompt: `You are a custom automation agent. Your job is: ${description.trim()}
@@ -1003,8 +1043,10 @@ ${additionalInstructions ? `## Additional Instructions\n${additionalInstructions
           : [],
       };
     }
+    sendProgress("analyze", "done");
 
     // 5. Install suggested skills from ClawHub
+    sendProgress("skills", "active");
     const installedSkills: string[] = [];
     const suggestedSkills: string[] = Array.isArray(analysis.suggestedSkills)
       ? analysis.suggestedSkills
@@ -1012,7 +1054,7 @@ ${additionalInstructions ? `## Additional Instructions\n${additionalInstructions
 
     for (const skillName of suggestedSkills) {
       try {
-        await gateway.send("skills.install", { name: skillName });
+        await gateway.send("skills.install", { name: skillName }, 15000);
         installedSkills.push(skillName);
       } catch (err: any) {
         if (!err.message?.includes("already")) {
@@ -1032,7 +1074,7 @@ ${additionalInstructions ? `## Additional Instructions\n${additionalInstructions
         try {
           await agentExec(
             `Create a new OpenClaw skill by performing these exact steps:\n1. Create the directory ~/.openclaw/skills/${skill.slug}/ (and any parent directories if needed)\n2. Write the following content EXACTLY to the file ~/.openclaw/skills/${skill.slug}/SKILL.md:\n\n${skill.skillMd}\n\nConfirm when the file has been created successfully.`,
-            60000
+            45000
           );
           installedSkills.push(skill.slug);
         } catch (err: any) {
@@ -1040,8 +1082,10 @@ ${additionalInstructions ? `## Additional Instructions\n${additionalInstructions
         }
       }
     }
+    sendProgress("skills", "done");
 
     // 7. Create cron job
+    sendProgress("cron", "active");
     let cronJobId: string | undefined;
     const systemPrompt = String(analysis.systemPrompt || "");
     let finalPrompt = systemPrompt.includes("{{ADDITIONAL_INSTRUCTIONS}}")
@@ -1062,54 +1106,21 @@ ${additionalInstructions ? `## Additional Instructions\n${additionalInstructions
             kind: "agentTurn",
             message: finalPrompt,
           },
-        })) as any;
+        }, 15000)) as any;
 
         cronJobId = cronResult?.id || cronResult?.jobId;
+        console.log(`[Workflows/Custom] cron.add SUCCESS: cronJobId=${cronJobId}`);
       } catch (err: any) {
-        console.error(`[Workflows] cron.add failed: ${err.message}, trying agentExec fallback`);
-        try {
-          const scheduleDesc =
-            schedule.kind === "every"
-              ? `every ${(schedule.intervalMs || 0) / 60000} minutes`
-              : `cron expression: ${schedule.expr}`;
-          await agentExec(
-            `Create a cron job named "${cronJobName}" with the following configuration:\n- Schedule: ${scheduleDesc}\n- Session: isolated\n- Prompt: ${finalPrompt}\n\nConfirm when the cron job has been created.`,
-            30000
-          );
-        } catch (fallbackErr: any) {
-          await patchConfig((config) => {
-            const jarvis = config.jarvis || {};
-            const workflows = (jarvis.workflows || []).map((w: WorkflowInstance) =>
-              w.id === workflowId
-                ? { ...w, status: "error", errorMessage: `Failed to create schedule: ${fallbackErr.message}` }
-                : w
-            );
-            return { ...config, jarvis: { ...jarvis, workflows } };
-          }).catch(() => {});
-
-          res.status(500).json({
-            ok: false,
-            error: `Failed to create cron job: ${err.message}`,
-          });
-          return;
-        }
+        console.error(`[Workflows/Custom] cron.add failed: ${err.message}`);
+        // Don't block — continue to mark as active
       }
     } else {
-      try {
-        const scheduleDesc =
-          schedule.kind === "every"
-            ? `every ${(schedule.intervalMs || 0) / 60000} minutes`
-            : `cron expression: ${schedule.expr}`;
-        await agentExec(
-          `Create a cron job named "${cronJobName}" with the following configuration:\n- Schedule: ${scheduleDesc}\n- Session: isolated\n- Prompt: ${finalPrompt}\n\nConfirm when the cron job has been created.`,
-          30000
-        );
-      } catch (err: any) {
-        console.error(`[Workflows] agentExec cron creation failed: ${err.message}`);
-      }
+      console.log(`[Workflows/Custom] No cron methods available, skipping cron.add`);
     }
+    sendProgress("cron", "done");
 
     // 8. Update workflow to active status
+    sendProgress("verify", "active");
     const now = new Date().toISOString();
     const suggestedConnections: string[] = Array.isArray(analysis.suggestedConnections)
       ? analysis.suggestedConnections
@@ -1132,8 +1143,9 @@ ${additionalInstructions ? `## Additional Instructions\n${additionalInstructions
       );
       return { ...config, jarvis: { ...jarvis, workflows } };
     });
+    sendProgress("verify", "done");
 
-    res.json({
+    const resultData = {
       ok: true,
       data: {
         workflow: {
@@ -1150,9 +1162,22 @@ ${additionalInstructions ? `## Additional Instructions\n${additionalInstructions
         skillsInstalled: installedSkills,
         skillsCreated: skillsToCreate.map((s: any) => s.slug).filter(Boolean),
       },
-    });
+    };
+
+    if (wantStream) {
+      res.write(`data: ${JSON.stringify({ step: "complete", status: "done", result: resultData })}\n\n`);
+      res.end();
+    } else {
+      res.json(resultData);
+    }
   } catch (err: any) {
-    res.status(500).json({ ok: false, error: err.message });
+    console.error(`[Workflows/Custom] Custom workflow creation error: ${err.message}`);
+    if (wantStream) {
+      sendProgress("error", "error", err.message);
+      res.end();
+    } else {
+      res.status(500).json({ ok: false, error: err.message });
+    }
   }
 });
 

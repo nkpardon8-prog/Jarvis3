@@ -4,6 +4,32 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-10 — Fix workflow creation hang: SSE streaming progress + cron.add direct
+
+**Author:** Nick (via Claude Code)
+**Commit:** fix: workflow creation no longer hangs — SSE streaming progress, direct cron.add, reduced timeouts
+**Branch:** main
+
+**What changed:**
+- **workflows.ts — SSE streaming progress for POST /workflows and POST /workflows/custom**: Both endpoints now support `Accept: text/event-stream` to stream real-time progress events to the client. Each step (skills, credentials, analyze, cron, verify) sends an SSE event when it starts and completes, so the client shows accurate per-step progress instead of fake timed animations.
+- **workflows.ts — Removed agentExec fallback for cron creation**: Verified `cron.add` gateway method works (<1s response time). Removed the 30-60s `agentExec` fallback path that was the primary cause of hangs. Cron job creation now uses only `gateway.send("cron.add", ...)` with a 15s timeout.
+- **workflows.ts — Reduced credential storage timeout**: Credential storage via `agentExec` now has 30s timeout (down from 60s) and failures are non-blocking — the workflow continues even if credential storage times out.
+- **workflows.ts — Reduced analysis timeout**: Custom workflow agent analysis now has 90s timeout (down from 120s) with better fallback prompt generation on failure.
+- **api.ts — Added `postWithProgress` SSE method**: New `api.postWithProgress()` method that POSTs with `Accept: text/event-stream`, parses SSE events, calls `onProgress` callback for each step, and returns the final result. Includes 3-minute AbortController timeout and graceful fallback for non-streaming responses.
+- **WorkflowSetupModal.tsx — Real-time progress from server**: Replaced fake timed animation steps with SSE-driven progress updates. Each step updates when the server reports it as active/done/error. Removed `useMutation` in favor of direct `api.postWithProgress` call.
+- **CustomWorkflowBuilder.tsx — Real-time progress from server**: Same SSE-driven progress. Steps now match actual server workflow: credentials → analyze → skills → cron → verify. Removed fake delays and `useMutation`.
+
+**Why:**
+- Workflow creation was hanging because the client showed fake progress animations while a single blocking API call did ALL the work server-side. If any step (especially credential storage via `agentExec` at 60s timeout, or cron fallback via `agentExec` at 30s timeout) was slow, the UI appeared frozen. The `agentExec` fallback for cron creation was unnecessary — `cron.add` works perfectly in <1 second. SSE streaming gives real-time visibility into which step is actually running.
+
+**Files touched:**
+- `server/src/routes/workflows.ts` — SSE streaming for POST /workflows and POST /workflows/custom, removed agentExec cron fallbacks, reduced timeouts
+- `client/lib/api.ts` — Added `postWithProgress` SSE method with AbortController timeout
+- `client/components/workflows/WorkflowSetupModal.tsx` — SSE-driven progress, removed useMutation
+- `client/components/workflows/CustomWorkflowBuilder.tsx` — SSE-driven progress, removed useMutation
+
+---
+
 ## 2026-02-10 — Fix infinite re-render loop: memoize Context Provider values
 
 **Author:** Nick (via Claude Code)

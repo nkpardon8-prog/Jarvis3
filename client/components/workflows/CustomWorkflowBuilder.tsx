@@ -1,9 +1,9 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
-import { api } from "@/lib/api";
+import { api, type ProgressEvent } from "@/lib/api";
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { SchedulePicker, type ScheduleOutput } from "./SchedulePicker";
@@ -209,34 +209,15 @@ export function CustomWorkflowBuilder({ onClose }: CustomWorkflowBuilderProps) {
     else if (step === "schedule") setStep("credentials");
   }
 
-  // Create workflow
-  const createWorkflow = useMutation({
-    mutationFn: async () => {
-      // Filter out empty credentials
-      const validCreds = credentials.filter(
-        (c) => c.envVar.trim() && c.value.trim()
-      );
-
-      const res = await api.post<any>("/workflows/custom", {
-        name: workflowName.trim(),
-        description: description.trim(),
-        schedule,
-        credentials: validCreds.map((c) => ({
-          envVar: c.envVar.trim().toUpperCase().replace(/[^A-Z0-9_]/g, "_"),
-          label: c.label.trim() || c.envVar.trim(),
-          value: c.value.trim(),
-        })),
-        additionalInstructions: additionalInstructions.trim(),
-        customTrigger: customTrigger.trim() || undefined,
-      });
-      if (!res.ok) throw new Error(res.error || "Failed to create workflow");
-      return res.data;
-    },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["workflows"] });
-      setResultData(data);
-    },
-  });
+  // SSE step name → progress step index mapping
+  // Server steps: credentials → analyze → skills → cron → verify
+  const STEP_MAP: Record<string, number> = {
+    credentials: 0,
+    analyze: 1,
+    skills: 2,
+    cron: 3,
+    verify: 4,
+  };
 
   async function handleActivate() {
     setStep("progress");
@@ -244,10 +225,9 @@ export function CustomWorkflowBuilder({ onClose }: CustomWorkflowBuilderProps) {
     setSetupError("");
 
     const steps: ProgressStep[] = [
-      { label: "Analyzing workflow requirements...", status: "pending" },
-      { label: "Generating agent prompt...", status: "pending" },
-      { label: "Installing skills...", status: "pending" },
       { label: "Storing credentials...", status: "pending" },
+      { label: "Analyzing workflow & generating prompt...", status: "pending" },
+      { label: "Installing skills...", status: "pending" },
       { label: "Creating scheduled job...", status: "pending" },
       { label: "Verifying workflow...", status: "pending" },
     ];
@@ -259,44 +239,53 @@ export function CustomWorkflowBuilder({ onClose }: CustomWorkflowBuilderProps) {
       );
     };
 
-    // Animated progress — the actual work happens in one POST call,
-    // so we animate steps as the mutation runs
-    updateStep(0, "active");
-    await new Promise((r) => setTimeout(r, 500));
-    updateStep(0, "done");
-
-    updateStep(1, "active");
+    // Filter out empty credentials
+    const validCreds = credentials.filter(
+      (c) => c.envVar.trim() && c.value.trim()
+    );
 
     try {
-      // This single call does everything: analyze, install skills, store creds, create cron
-      await createWorkflow.mutateAsync();
+      const res = await api.postWithProgress<any>(
+        "/workflows/custom",
+        {
+          name: workflowName.trim(),
+          description: description.trim(),
+          schedule,
+          credentials: validCreds.map((c) => ({
+            envVar: c.envVar.trim().toUpperCase().replace(/[^A-Z0-9_]/g, "_"),
+            label: c.label.trim() || c.envVar.trim(),
+            value: c.value.trim(),
+          })),
+          additionalInstructions: additionalInstructions.trim(),
+          customTrigger: customTrigger.trim() || undefined,
+        },
+        (event: ProgressEvent) => {
+          const idx = STEP_MAP[event.step];
+          if (idx !== undefined) {
+            if (event.status === "active") {
+              updateStep(idx, "active");
+            } else if (event.status === "done") {
+              updateStep(idx, "done");
+            } else if (event.status === "error") {
+              updateStep(idx, "error");
+            }
+          }
+        }
+      );
 
-      updateStep(1, "done");
+      if (!res.ok) throw new Error(res.error || "Failed to create workflow");
 
-      // Mark remaining steps as done
-      updateStep(2, "active");
-      await new Promise((r) => setTimeout(r, 400));
-      updateStep(2, "done");
-
-      updateStep(3, "active");
-      await new Promise((r) => setTimeout(r, 300));
-      updateStep(3, "done");
-
-      updateStep(4, "active");
-      await new Promise((r) => setTimeout(r, 400));
-      updateStep(4, "done");
-
-      updateStep(5, "active");
-      await new Promise((r) => setTimeout(r, 300));
-      updateStep(5, "done");
-
+      // Ensure all steps show done
+      for (let i = 0; i < steps.length; i++) updateStep(i, "done");
+      queryClient.invalidateQueries({ queryKey: ["workflows"] });
+      setResultData(res.data);
       setSetupDone(true);
     } catch (err: any) {
-      // Find first active step and mark it as error
+      // Find first non-done step and mark as error
       setProgressSteps((prev) => {
-        const activeIdx = prev.findIndex((s) => s.status === "active");
+        const firstPending = prev.findIndex((s) => s.status !== "done");
         return prev.map((s, i) =>
-          i === (activeIdx >= 0 ? activeIdx : 1) ? { ...s, status: "error" } : s
+          i === (firstPending >= 0 ? firstPending : 0) ? { ...s, status: "error" } : s
         );
       });
       setSetupError(err.message || "Failed to create workflow");

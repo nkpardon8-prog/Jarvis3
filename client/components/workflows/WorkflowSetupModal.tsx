@@ -1,9 +1,9 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
-import { api } from "@/lib/api";
+import { api, type ProgressEvent } from "@/lib/api";
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { WorkflowTemplateCard } from "./WorkflowTemplateCard";
@@ -118,26 +118,15 @@ export function WorkflowSetupModal({
     return true;
   }
 
-  // Create workflow mutation
-  const createWorkflow = useMutation({
-    mutationFn: async () => {
-      const res = await api.post<any>("/workflows", {
-        templateId: selectedTemplate!.id,
-        name: workflowName.trim(),
-        credentials,
-        schedule: getScheduleForApi(),
-        additionalInstructions: additionalInstructions.trim(),
-        customTrigger: customTrigger.trim() || undefined,
-      });
-      if (!res.ok) throw new Error(res.error || "Failed to create workflow");
-      return res.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["workflows"] });
-    },
-  });
+  // SSE step name → progress step index mapping
+  const STEP_MAP: Record<string, number> = {
+    skills: 0,
+    credentials: 1,
+    cron: 2,
+    verify: 3,
+  };
 
-  // Handle activation
+  // Handle activation with SSE streaming progress
   async function handleActivate() {
     if (!selectedTemplate || !isValid()) return;
 
@@ -159,31 +148,45 @@ export function WorkflowSetupModal({
       );
     };
 
-    // Step 1: Skills
-    updateStep(0, "active");
-    await new Promise((r) => setTimeout(r, 600));
-    updateStep(0, "done");
-
-    // Step 2: Credentials
-    updateStep(1, "active");
-    await new Promise((r) => setTimeout(r, 400));
-    updateStep(1, "done");
-
-    // Step 3: Create
-    updateStep(2, "active");
-
     try {
-      await createWorkflow.mutateAsync();
-      updateStep(2, "done");
+      const res = await api.postWithProgress<any>(
+        "/workflows",
+        {
+          templateId: selectedTemplate.id,
+          name: workflowName.trim(),
+          credentials,
+          schedule: getScheduleForApi(),
+          additionalInstructions: additionalInstructions.trim(),
+          customTrigger: customTrigger.trim() || undefined,
+        },
+        (event: ProgressEvent) => {
+          const idx = STEP_MAP[event.step];
+          if (idx !== undefined) {
+            if (event.status === "active") {
+              updateStep(idx, "active");
+            } else if (event.status === "done") {
+              updateStep(idx, "done");
+            } else if (event.status === "error") {
+              updateStep(idx, "error");
+            }
+          }
+        }
+      );
 
-      // Step 4: Verify
-      updateStep(3, "active");
-      await new Promise((r) => setTimeout(r, 800));
-      updateStep(3, "done");
+      if (!res.ok) throw new Error(res.error || "Failed to create workflow");
 
+      // Ensure all steps show done
+      for (let i = 0; i < steps.length; i++) updateStep(i, "done");
+      queryClient.invalidateQueries({ queryKey: ["workflows"] });
       setSetupDone(true);
     } catch (err: any) {
-      updateStep(2, "error");
+      // Find first non-done step and mark as error
+      setProgressSteps((prev) => {
+        const firstPending = prev.findIndex((s) => s.status !== "done");
+        return prev.map((s, i) =>
+          i === (firstPending >= 0 ? firstPending : 0) ? { ...s, status: "error" } : s
+        );
+      });
       setSetupError(err.message || "Failed to activate workflow");
     }
   }
