@@ -4,6 +4,25 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-10 — Fix merge-dropped Prisma models: restore Workflow, SavedAgenda, SchedulePreferences
+
+**Author:** Nick (via Claude Code)
+**Commit:** fix: restore Workflow, SavedAgenda, SchedulePreferences models dropped during merge
+**Branch:** main
+
+**What changed:**
+- **schema.prisma — Restored 3 Prisma models lost during oz/email-restructure-automation merge**: `Workflow` (workflow metadata), `SavedAgenda` (persisted AI agendas with `@@unique([userId, date])`), `SchedulePreferences` (user schedule preferences for agenda builder). The User model still had `workflows Workflow[]`, `savedAgendas SavedAgenda[]`, and `schedulePreferences SchedulePreferences?` relations pointing to these, but the actual model definitions were dropped in the merge conflict resolution.
+- Ran `npx prisma validate` (✅), `npx prisma db push` (✅), `npx tsc --noEmit` (✅)
+
+**Why:**
+- PR #4 merge from oz/email-restructure-automation silently dropped these 3 model definitions from the end of schema.prisma while keeping the User relation references. This caused Prisma validation failures and would have broken the server on restart.
+
+**Files touched:**
+- `server/prisma/schema.prisma` — Added back Workflow, SavedAgenda, SchedulePreferences model definitions
+- `CHANGES.md` — Added this entry
+
+---
+
 ## 2026-02-10 — Fix "invalid config" error: migrate workflow storage from gateway config to Prisma DB
 
 **Author:** Nick (via Claude Code)

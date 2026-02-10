@@ -330,3 +330,64 @@ model TaggingSchedule {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
+
+model SchedulePreferences {
+  id                String   @id @default(uuid())
+  userId            String   @unique
+  wakeTime          String   @default("07:00")
+  sleepTime         String   @default("22:00")
+  workStartTime     String   @default("09:00")
+  workEndTime       String   @default("17:00")
+  lunchStart        String   @default("12:00")
+  lunchDuration     Int      @default(60)
+  focusBlockMinutes Int      @default(90)
+  breakMinutes      Int      @default(15)
+  travelBuffer      Int      @default(15)
+  midDayActivity    String   @default("")
+  midDayStart       String   @default("14:00")
+  midDayDuration    Int      @default(30)
+  preferMorning     Boolean  @default(true)
+  notes             String   @default("")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Workflow {
+  id                     String   @id @default(uuid())
+  userId                 String
+  templateId             String   // e.g. "github-triage" or "custom-my-slug"
+  name                   String
+  status                 String   @default("setting-up") // setting-up, active, paused, error
+  schedule               String   // JSON: { kind, expr?, intervalMs?, tz? }
+  customTrigger          String?
+  additionalInstructions String   @default("")
+  cronJobId              String?
+  cronJobName            String
+  installedSkills        String   @default("[]") // JSON array
+  storedCredentials      String   @default("[]") // JSON array
+  generatedPrompt        String?  // For custom workflows
+  errorMessage           String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model SavedAgenda {
+  id             String   @id @default(uuid())
+  userId         String
+  date           String   // "YYYY-MM-DD" local date the agenda is for
+  items          String   // JSON-serialized AgendaItem[] array
+  raw            String?  // Raw AI text if JSON parsing failed
+  completedItems String   @default("[]") // JSON array of completed item indices
+  eventCount     Int      @default(0)
+  taskCount      Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+}
