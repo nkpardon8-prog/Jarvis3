@@ -4,6 +4,25 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-11 — Auto re-register workflow cron jobs on gateway connect/reconnect
+
+**Author:** Nick (via Claude Code)
+**Commit:** fix: re-register workflow cron jobs on gateway startup and reconnect
+**Branch:** main
+
+**What changed:**
+- **Added `reRegisterWorkflowCrons()` function** to `workflows.ts` — queries all active workflows from Prisma, checks which ones are already in `cron.list`, and re-registers any missing ones via `cron.add`. Updates stored `cronJobId` if the gateway assigns a new ID.
+- **Called on initial gateway connect and on reconnect** in `index.ts` — ensures cron jobs survive server restarts and gateway disconnects. The OpenClaw gateway does not persist cron jobs across restarts, so without this, all workflow schedules would be lost until a user manually pauses/resumes each workflow.
+
+**Why:**
+- After server restart, the Email Triage cron job showed `cronActive: false` — the gateway had lost the job. The `cron.run` force-run also failed, falling back to `agentExec`. This meant recurring workflows were not actually running on schedule. The re-registration ensures all active workflows are always registered with the gateway cron scheduler.
+
+**Files touched:**
+- `server/src/routes/workflows.ts` — MODIFIED: added `reRegisterWorkflowCrons()` export function
+- `server/src/index.ts` — MODIFIED: imported `reRegisterWorkflowCrons`, called on gateway connect + reconnect
+
+---
+
 ## 2026-02-11 — Email Triage: process newest 100 emails + increase rate limits
 
 **Author:** Nick (via Claude Code)

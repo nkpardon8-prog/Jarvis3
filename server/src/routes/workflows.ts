@@ -1050,4 +1050,88 @@ router.get("/:id/history", async (req: AuthRequest, res: Response) => {
   }
 });
 
+// ─── Cron Re-registration on Gateway Reconnect ─────────────
+
+/**
+ * Re-register all active workflow cron jobs with the gateway.
+ * Called on server startup and gateway reconnect because the gateway
+ * does not persist cron jobs across restarts.
+ */
+export async function reRegisterWorkflowCrons(): Promise<void> {
+  if (!hasCronMethods()) {
+    console.log("[Workflows] No cron methods available — skipping re-registration");
+    return;
+  }
+
+  const activeWorkflows = await prisma.workflow.findMany({
+    where: { status: "active" },
+  });
+
+  if (activeWorkflows.length === 0) {
+    console.log("[Workflows] No active workflows to re-register");
+    return;
+  }
+
+  console.log(`[Workflows] Re-registering ${activeWorkflows.length} active workflow cron job(s)…`);
+
+  // Get existing cron jobs so we don't duplicate
+  let existingJobs: any[] = [];
+  try {
+    const cronResult = (await gateway.send("cron.list", {})) as any;
+    existingJobs = Array.isArray(cronResult?.jobs)
+      ? cronResult.jobs
+      : Array.isArray(cronResult)
+        ? cronResult
+        : [];
+  } catch {
+    // cron.list failed — register everything
+  }
+
+  for (const workflow of activeWorkflows) {
+    const alreadyExists = existingJobs.some(
+      (j: any) => j.name === workflow.cronJobName || j.id === workflow.cronJobId
+    );
+
+    if (alreadyExists) {
+      console.log(`[Workflows]   ✓ ${workflow.name} (${workflow.cronJobName}) — already registered`);
+      continue;
+    }
+
+    const agentPrompt = getWorkflowPrompt(workflow);
+    if (!agentPrompt) {
+      console.warn(`[Workflows]   ✗ ${workflow.name} — no prompt available, skipping`);
+      continue;
+    }
+
+    const schedule = JSON.parse(workflow.schedule || "{}");
+    const template = getTemplateById(workflow.templateId);
+    const sessionTarget = template?.sessionTarget || "isolated";
+
+    try {
+      const cronResult = (await gateway.send("cron.add", {
+        name: workflow.cronJobName,
+        schedule: buildCronSchedule(schedule),
+        sessionTarget,
+        payload: { kind: "agentTurn", message: agentPrompt },
+      }, 15000)) as any;
+
+      const newJobId = cronResult?.id || cronResult?.jobId;
+
+      // Update stored cronJobId if the gateway assigned a new one
+      if (newJobId && newJobId !== workflow.cronJobId) {
+        await prisma.workflow.update({
+          where: { id: workflow.id },
+          data: { cronJobId: newJobId },
+        });
+      }
+
+      console.log(`[Workflows]   ✓ ${workflow.name} (${workflow.cronJobName}) — registered (id: ${newJobId || "unknown"})`);
+    } catch (err: any) {
+      console.error(`[Workflows]   ✗ ${workflow.name} — cron.add failed: ${err.message}`);
+    }
+  }
+
+  console.log("[Workflows] Cron re-registration complete");
+}
+
 export default router;

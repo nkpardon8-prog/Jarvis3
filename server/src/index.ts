@@ -18,7 +18,7 @@ import crmRoutes from "./routes/crm";
 import oauthRoutes from "./routes/oauth";
 import gatewayRoutes from "./routes/gateway";
 import integrationsRoutes from "./routes/integrations";
-import workflowsRoutes from "./routes/workflows";
+import workflowsRoutes, { reRegisterWorkflowCrons } from "./routes/workflows";
 import driveRoutes from "./routes/drive";
 import composerRoutes from "./routes/composer";
 import automationRoutes from "./routes/automation";
@@ -119,6 +119,11 @@ httpServer.listen(config.port, async () => {
   try {
     await gateway.connect();
     console.log("[Jarvis] Gateway connection established");
+
+    // Re-register workflow cron jobs (gateway doesn't persist them across restarts)
+    reRegisterWorkflowCrons().catch((err: any) => {
+      console.error("[Jarvis] Workflow cron re-registration error:", err.message);
+    });
   } catch (err: any) {
     console.error("[Jarvis] Failed to connect to Gateway:", err.message);
     console.log("[Jarvis] Will retry connecting in the background...");
@@ -133,6 +138,10 @@ httpServer.listen(config.port, async () => {
     // Backfill proxy provisioning for already-connected Google users
     backfillAllConnectedUsers().catch((err: any) => {
       console.error("[Jarvis] Proxy backfill error:", err.message);
+    });
+    // Re-register workflow cron jobs (gateway doesn't persist them across restarts)
+    reRegisterWorkflowCrons().catch((err: any) => {
+      console.error("[Jarvis] Workflow cron re-registration error:", err.message);
     });
   });
 });
