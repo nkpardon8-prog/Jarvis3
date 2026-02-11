@@ -2,44 +2,14 @@
 
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import type { WorkflowTemplate } from "./workflowTemplates";
-import {
-  GitPullRequest,
-  Briefcase,
-  BookOpen,
-  Radio,
-  Home,
-  Puzzle,
-} from "lucide-react";
+import { getWorkflowIcon } from "./workflowIcons";
+import { getColorClasses } from "./workflowColors";
+import { Puzzle } from "lucide-react";
 
-const ICON_MAP: Record<string, React.ComponentType<{ size?: number; className?: string }>> = {
-  GitPullRequest,
-  Briefcase,
-  BookOpen,
-  Radio,
-  Home,
-};
-
-const COLOR_MAP: Record<string, { bg: string; text: string; border: string }> = {
-  "hud-accent": {
-    bg: "bg-hud-accent/15",
-    text: "text-hud-accent",
-    border: "border-hud-accent/30",
-  },
-  "hud-success": {
-    bg: "bg-hud-success/15",
-    text: "text-hud-success",
-    border: "border-hud-success/30",
-  },
-  "hud-amber": {
-    bg: "bg-hud-amber/15",
-    text: "text-hud-amber",
-    border: "border-hud-amber/30",
-  },
-  "hud-error": {
-    bg: "bg-hud-error/15",
-    text: "text-hud-error",
-    border: "border-hud-error/30",
-  },
+const COMPLEXITY_STYLES: Record<string, { bg: string; text: string }> = {
+  easy: { bg: "bg-hud-success/15", text: "text-hud-success" },
+  medium: { bg: "bg-hud-amber/15", text: "text-hud-amber" },
+  hard: { bg: "bg-hud-error/15", text: "text-hud-error" },
 };
 
 interface WorkflowTemplateCardProps {
@@ -53,8 +23,9 @@ export function WorkflowTemplateCard({
   onClick,
   disabled,
 }: WorkflowTemplateCardProps) {
-  const Icon = ICON_MAP[template.icon] || Puzzle;
-  const colors = COLOR_MAP[template.accentColor] || COLOR_MAP["hud-accent"];
+  const Icon = getWorkflowIcon(template.icon);
+  const colors = getColorClasses(template.accentColor);
+  const complexity = COMPLEXITY_STYLES[template.complexity] || COMPLEXITY_STYLES.easy;
 
   return (
     <button
@@ -82,6 +53,11 @@ export function WorkflowTemplateCard({
               >
                 {template.category}
               </span>
+              <span
+                className={`text-[9px] px-1.5 py-0.5 rounded-full ${complexity.bg} ${complexity.text} whitespace-nowrap`}
+              >
+                {template.complexity}
+              </span>
             </div>
 
             <p className="text-[11px] text-hud-text-muted line-clamp-2 mb-2">
@@ -89,17 +65,19 @@ export function WorkflowTemplateCard({
             </p>
 
             {/* Required skills */}
-            <div className="flex flex-wrap gap-1">
-              {template.requiredSkills.map((skill) => (
-                <span
-                  key={skill}
-                  className="flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded bg-white/5 text-hud-text-muted border border-hud-border"
-                >
-                  <Puzzle size={8} />
-                  {skill}
-                </span>
-              ))}
-            </div>
+            {template.requiredSkills.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {template.requiredSkills.map((skill) => (
+                  <span
+                    key={skill}
+                    className="flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded bg-white/5 text-hud-text-muted border border-hud-border"
+                  >
+                    <Puzzle size={8} />
+                    {skill}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </GlassPanel>

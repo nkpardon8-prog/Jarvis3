@@ -1,4 +1,7 @@
 // ── Workflow Template Definitions & Types ────────────────────────────
+// Client-side template metadata for the 20 everyday automations.
+// Server-side templates (with full prompts + SKILL.md) live in
+// server/src/routes/workflow-templates/templates.ts
 
 export interface CredentialField {
   envVar: string;
@@ -25,12 +28,12 @@ export interface WorkflowTemplate {
   icon: string; // lucide-react icon name
   accentColor: string; // HUD color token
   category: string;
+  complexity: "easy" | "medium" | "hard";
   requiredSkills: string[];
   credentialFields: CredentialField[];
   oauthProviders?: string[];
   defaultSchedule: ScheduleValue;
   schedulePresets: SchedulePreset[];
-  promptTemplate: string;
   sessionTarget: "isolated" | "main";
 }
 
@@ -51,389 +54,429 @@ export interface WorkflowInstance {
   errorMessage?: string;
 }
 
-// ── The 5 Pre-Built Workflow Templates ───────────────────────────────
+// ── The 20 Everyday Automation Templates ─────────────────────────────
 
 export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
+  // ─── 01. Morning Briefing ───────────────────────
   {
-    id: "github-triage",
-    name: "GitHub Issue + PR Triage Agent",
-    description:
-      "Monitors your repos, labels and triages issues, reviews PRs, and summarizes activity.",
-    icon: "GitPullRequest",
+    id: "morning-briefing",
+    name: "Morning Briefing",
+    description: "Delivers a personalized daily briefing with calendar, weather, news, and email highlights.",
+    icon: "Sunrise",
     accentColor: "hud-accent",
-    category: "Development",
-    requiredSkills: ["github"],
+    category: "Daily Productivity",
+    complexity: "easy",
+    requiredSkills: ["google-calendar", "web-search"],
     credentialFields: [
-      {
-        envVar: "GITHUB_PAT",
-        label: "GitHub Personal Access Token",
-        placeholder: "ghp_...",
-        helpUrl: "https://github.com/settings/tokens",
-      },
+      { envVar: "OPENWEATHERMAP_KEY", label: "OpenWeatherMap API Key", placeholder: "Enter your OpenWeatherMap API key" },
+      { envVar: "NEWS_API_KEY", label: "News API Key", placeholder: "Enter your NewsAPI key" },
     ],
+    oauthProviders: ["google"],
+    defaultSchedule: { kind: "cron", expr: "0 7 * * *" },
+    schedulePresets: [
+      { label: "6 AM", value: { kind: "cron", expr: "0 6 * * *" } },
+      { label: "7 AM", value: { kind: "cron", expr: "0 7 * * *" } },
+      { label: "8 AM", value: { kind: "cron", expr: "0 8 * * *" } },
+    ],
+    sessionTarget: "isolated",
+  },
+  // ─── 02. Email Triage ───────────────────────────
+  {
+    id: "email-triage",
+    name: "Email Triage",
+    description: "Automatically classifies, labels, and prioritizes your inbox every 30 minutes.",
+    icon: "Mail",
+    accentColor: "hud-success",
+    category: "Email Management",
+    complexity: "easy",
+    requiredSkills: ["gmail"],
+    credentialFields: [],
+    oauthProviders: ["google"],
     defaultSchedule: { kind: "every", intervalMs: 1800000 },
     schedulePresets: [
       { label: "Every 15 min", value: { kind: "every", intervalMs: 900000 } },
       { label: "Every 30 min", value: { kind: "every", intervalMs: 1800000 } },
       { label: "Every hour", value: { kind: "every", intervalMs: 3600000 } },
-      { label: "Custom cron", value: { kind: "cron", expr: "" } },
     ],
-    promptTemplate: `You are a GitHub Triage Agent. Your job is to monitor GitHub repositories, triage issues, review pull requests, and produce a structured activity report.
-
-## Authentication
-You have the "github" skill installed. Use the GITHUB_PAT environment variable (already configured at ~/.openclaw/.env) to authenticate all GitHub API calls. Do NOT ask the user for credentials.
-
-## Instructions
-
-### Step 1 — Discover Repositories
-List all repositories accessible with the configured token. Focus on repos with recent activity (issues or PRs opened/updated in the last 24 hours, or since the last run).
-
-### Step 2 — Triage New Issues
-For each repo with new or unresolved issues:
-- Read the issue title, body, and any existing labels.
-- Assign a priority label: "priority:critical", "priority:high", "priority:medium", or "priority:low" based on severity and impact.
-- Add category labels where appropriate: "bug", "feature", "question", "documentation", "enhancement".
-- Post a brief triage comment summarizing your assessment and any recommended next steps. Keep comments concise (2-4 sentences).
-- If an issue is a duplicate, label it "duplicate" and reference the original.
-
-### Step 3 — Review Open Pull Requests
-For each repo with open PRs:
-- Check if the PR has merge conflicts. If so, add a "needs-rebase" label and comment noting the conflict.
-- Review the diff: look for obvious issues (syntax errors, missing tests, security concerns, large unreviewed files).
-- Post a brief review comment with observations and suggestions. Do NOT approve or merge — only advise.
-- Summarize what the PR does in 1-2 sentences.
-
-### Step 4 — Generate Activity Report
-Produce a structured summary with these sections:
-- **Issues Triaged**: count and list (repo — #number — title — assigned priority)
-- **PRs Reviewed**: count and list (repo — #number — title — status notes)
-- **Action Items**: anything that needs human attention (critical bugs, PRs with conflicts, stale issues)
-
-## Error Handling
-- If a repo is inaccessible (403/404), skip it and note it in the report.
-- If the GitHub API rate limit is hit, stop processing and report what was completed.
-- Never fail silently — always include errors in the final report.
-
-{{ADDITIONAL_INSTRUCTIONS}}`,
     sessionTarget: "isolated",
   },
+  // ─── 03. Bill & Receipt Tracker ─────────────────
   {
-    id: "google-workspace-assistant",
-    name: "Google Workspace Executive Assistant",
-    description:
-      "Summarizes inbox, manages calendar conflicts, drafts responses, and prepares daily briefings.",
-    icon: "Briefcase",
-    accentColor: "hud-success",
-    category: "Productivity",
-    requiredSkills: ["google-calendar", "gmail", "google-drive"],
+    id: "bill-tracker",
+    name: "Bill & Receipt Tracker",
+    description: "Scans your email for bills and receipts, extracts amounts, and logs them to a spreadsheet.",
+    icon: "Receipt",
+    accentColor: "hud-amber",
+    category: "Personal Finance",
+    complexity: "medium",
+    requiredSkills: ["gmail", "google-drive"],
     credentialFields: [],
     oauthProviders: ["google"],
-    defaultSchedule: { kind: "cron", expr: "0 7 * * *" },
+    defaultSchedule: { kind: "cron", expr: "0 20 * * *" },
     schedulePresets: [
-      {
-        label: "Morning briefing (7 AM)",
-        value: { kind: "cron", expr: "0 7 * * *" },
-      },
-      {
-        label: "Morning + afternoon",
-        value: { kind: "cron", expr: "0 7,14 * * *" },
-      },
-      {
-        label: "Every 2 hours (work hours)",
-        value: { kind: "cron", expr: "0 8-18/2 * * 1-5" },
-      },
-      { label: "Custom cron", value: { kind: "cron", expr: "" } },
+      { label: "Daily at 8 PM", value: { kind: "cron", expr: "0 20 * * *" } },
+      { label: "Daily at 9 PM", value: { kind: "cron", expr: "0 21 * * *" } },
+      { label: "Weekly Sunday", value: { kind: "cron", expr: "0 20 * * 0" } },
     ],
-    promptTemplate: `You are a Google Workspace Executive Assistant. Your job is to manage email, calendar, and drive activity, then deliver a concise executive briefing.
-
-## Authentication
-You have the "google-calendar", "gmail", and "google-drive" skills installed. Google OAuth is already connected — use the authenticated Google APIs directly. Do NOT ask the user for credentials.
-
-## Instructions
-
-### Step 1 — Email Triage
-- Fetch unread emails from Gmail.
-- Categorize each email:
-  - **Urgent**: needs same-day response (from direct reports, executives, clients, contains keywords like "ASAP", "urgent", "deadline").
-  - **Action Required**: needs a response but not time-critical.
-  - **FYI**: informational only, no response needed.
-  - **Low Priority**: newsletters, automated notifications, marketing.
-- For each urgent email, draft a brief suggested response (2-3 sentences). Do NOT send the drafts — save them as Gmail drafts.
-
-### Step 2 — Calendar Review
-- Fetch today's calendar events (and tomorrow's if running in the evening).
-- Check for scheduling conflicts (overlapping events). Flag them clearly.
-- For each meeting, note:
-  - Time, title, attendees count
-  - Whether it has an agenda/document attached
-  - Any prep work needed (e.g., "Review Q4 report before this meeting")
-
-### Step 3 — Drive Activity
-- Check Google Drive for recently shared documents (last 24 hours).
-- Note any documents that were shared with the user or where the user was mentioned in comments.
-
-### Step 4 — Executive Briefing
-Produce a structured briefing with these sections:
-- **Urgent Emails** (count + summary of each, with draft status)
-- **Today's Schedule** (chronological list with conflict warnings)
-- **Action Items** (consolidated list from emails + calendar prep)
-- **Drive Updates** (new shares or comment mentions)
-- **Tomorrow Preview** (if available — next day's first few events)
-
-## Output Format
-Use clear headers and bullet points. Keep the total briefing under 500 words. Prioritize actionable information.
-
-## Error Handling
-- If Gmail access fails, report the error and continue with calendar/drive.
-- If no unread emails exist, say "Inbox clear — no unread emails."
-- Never fail silently — always report what succeeded and what failed.
-
-{{ADDITIONAL_INSTRUCTIONS}}`,
     sessionTarget: "isolated",
   },
+  // ─── 04. Calendar Assistant ─────────────────────
   {
-    id: "notion-curator",
-    name: "Notion Knowledgebase Curator",
-    description:
-      "Syncs meeting notes, organizes pages, maintains tags, and builds a knowledge graph.",
-    icon: "BookOpen",
+    id: "calendar-assistant",
+    name: "Calendar Assistant",
+    description: "Reviews your upcoming schedule, detects conflicts, and suggests optimizations daily.",
+    icon: "CalendarCheck",
+    accentColor: "hud-accent",
+    category: "Daily Productivity",
+    complexity: "easy",
+    requiredSkills: ["google-calendar", "gmail"],
+    credentialFields: [],
+    oauthProviders: ["google"],
+    defaultSchedule: { kind: "cron", expr: "0 7 * * 1-5" },
+    schedulePresets: [
+      { label: "7 AM Weekdays", value: { kind: "cron", expr: "0 7 * * 1-5" } },
+      { label: "6 AM Daily", value: { kind: "cron", expr: "0 6 * * *" } },
+      { label: "8 AM Daily", value: { kind: "cron", expr: "0 8 * * *" } },
+    ],
+    sessionTarget: "isolated",
+  },
+  // ─── 05. Meal Planner ──────────────────────────
+  {
+    id: "meal-planner",
+    name: "Meal Planner",
+    description: "Generates a weekly meal plan with recipes and a consolidated grocery list in Notion.",
+    icon: "UtensilsCrossed",
     accentColor: "hud-amber",
-    category: "Knowledge",
+    category: "Home & Lifestyle",
+    complexity: "medium",
     requiredSkills: ["notion"],
     credentialFields: [
-      {
-        envVar: "NOTION_API_KEY",
-        label: "Notion API Key",
-        placeholder: "ntn_...",
-        helpUrl: "https://www.notion.so/my-integrations",
-      },
+      { envVar: "NOTION_API_KEY", label: "Notion API Key", placeholder: "secret_..." },
     ],
-    defaultSchedule: { kind: "cron", expr: "0 22 * * *" },
+    defaultSchedule: { kind: "cron", expr: "0 10 * * 0" },
     schedulePresets: [
-      {
-        label: "Daily (10 PM)",
-        value: { kind: "cron", expr: "0 22 * * *" },
-      },
-      {
-        label: "Twice daily",
-        value: { kind: "cron", expr: "0 9,22 * * *" },
-      },
-      {
-        label: "Weekly (Sunday)",
-        value: { kind: "cron", expr: "0 20 * * 0" },
-      },
-      { label: "Custom cron", value: { kind: "cron", expr: "" } },
+      { label: "Sunday 10 AM", value: { kind: "cron", expr: "0 10 * * 0" } },
+      { label: "Saturday 9 AM", value: { kind: "cron", expr: "0 9 * * 6" } },
+      { label: "Friday 6 PM", value: { kind: "cron", expr: "0 18 * * 5" } },
     ],
-    promptTemplate: `You are a Notion Knowledgebase Curator. Your job is to organize, tag, and maintain a Notion workspace, keeping it clean, discoverable, and well-structured.
-
-## Authentication
-You have the "notion" skill installed. Use the NOTION_API_KEY environment variable (already configured at ~/.openclaw/.env) to authenticate all Notion API calls. Do NOT ask the user for credentials.
-
-## Instructions
-
-### Step 1 — Scan Recent Changes
-- Query Notion for all pages modified in the last 24 hours (or since the last run).
-- For each modified page, note: title, parent database/page, last editor, modification type (content edit, property change, new page).
-
-### Step 2 — Tag & Categorize
-- Check each recently modified page for proper tagging:
-  - Does it have a "Category" or "Type" property filled in? If empty, infer the category from the page content and set it.
-  - Does it have a "Status" property? If it looks like a draft (short content, placeholder text), set status to "Draft".
-  - Are there relevant tags missing? Add tags based on content analysis (topics, project names, people mentioned).
-- Use existing tag values from the workspace when possible to maintain consistency. Do NOT invent new tag categories without strong reason.
-
-### Step 3 — Identify Orphaned Pages
-- Find pages that are not linked from any other page and are not in a database.
-- For each orphaned page, suggest where it should be moved (based on content similarity to existing sections).
-- If an orphaned page appears to be junk or empty, flag it for deletion review.
-
-### Step 4 — Knowledge Graph Update
-- Identify relationships between pages: if page A references concepts from page B, note the connection.
-- If the workspace has a "Knowledge Map" or index page, update it with new entries and cross-references.
-- If no index page exists, create a summary list of key topic clusters found in the workspace.
-
-### Step 5 — Curation Report
-Produce a structured report:
-- **Pages Updated**: count and list (title — what was changed: tags added, category set, etc.)
-- **Orphaned Pages Found**: count and list with suggested destinations
-- **New Connections**: cross-references added or suggested
-- **Workspace Health**: brief assessment (e.g., "12 pages properly tagged, 3 orphans found, 2 empty drafts flagged")
-
-## Error Handling
-- If a page cannot be updated (permissions), skip it and note in the report.
-- If the Notion API rate limit is hit, stop and report progress so far.
-- Never delete pages — only flag them for human review.
-- Never fail silently — always report what was completed and any issues.
-
-{{ADDITIONAL_INSTRUCTIONS}}`,
     sessionTarget: "isolated",
   },
+  // ─── 06. Package Tracker ────────────────────────
   {
-    id: "social-listening",
-    name: "Social Listening Digest",
-    description:
-      "Monitors social channels and web mentions, summarizes trends, and delivers digests via Slack or Discord.",
-    icon: "Radio",
-    accentColor: "hud-error",
-    category: "Monitoring",
-    requiredSkills: ["slack", "web-search"],
+    id: "package-tracker",
+    name: "Package Tracker",
+    description: "Monitors your email for shipping notifications and tracks all packages in one place.",
+    icon: "Package",
+    accentColor: "hud-amber",
+    category: "Home & Lifestyle",
+    complexity: "easy",
+    requiredSkills: ["gmail"],
     credentialFields: [
-      {
-        envVar: "SLACK_WEBHOOK_URL",
-        label: "Slack Webhook URL",
-        placeholder: "https://hooks.slack.com/services/...",
-        helpUrl: "https://api.slack.com/messaging/webhooks",
-      },
+      { envVar: "AFTERSHIP_API_KEY", label: "AfterShip API Key (optional)", placeholder: "Enter API key for enhanced tracking" },
     ],
-    defaultSchedule: { kind: "cron", expr: "0 9,17 * * 1-5" },
+    oauthProviders: ["google"],
+    defaultSchedule: { kind: "every", intervalMs: 14400000 },
     schedulePresets: [
-      {
-        label: "Twice daily (9 AM, 5 PM)",
-        value: { kind: "cron", expr: "0 9,17 * * 1-5" },
-      },
-      {
-        label: "Daily morning",
-        value: { kind: "cron", expr: "0 9 * * *" },
-      },
-      {
-        label: "Every 4 hours",
-        value: { kind: "every", intervalMs: 14400000 },
-      },
-      { label: "Custom cron", value: { kind: "cron", expr: "" } },
+      { label: "Every 2 hours", value: { kind: "every", intervalMs: 7200000 } },
+      { label: "Every 4 hours", value: { kind: "every", intervalMs: 14400000 } },
+      { label: "Every 8 hours", value: { kind: "every", intervalMs: 28800000 } },
     ],
-    promptTemplate: `You are a Social Listening Agent. Your job is to monitor the web and communication channels for brand mentions, trending topics, and relevant discussions, then compile and deliver a structured digest.
-
-## Authentication & Tools
-You have the "slack" and "web-search" skills installed.
-- Use the SLACK_WEBHOOK_URL environment variable (already configured at ~/.openclaw/.env) to post digests to Slack. Do NOT ask the user for credentials.
-- Use the web-search skill to search for brand/topic mentions across the internet.
-
-## Instructions
-
-### Step 1 — Web Search Scan
-- Search the web for mentions of the configured brand name, product names, and key topics.
-- Search multiple sources: news sites, blogs, forums, Reddit, Twitter/X, Hacker News, Product Hunt.
-- Focus on mentions from the last 24 hours (or since the last run).
-- For each mention found, capture: source, title/headline, URL, brief excerpt, and estimated sentiment (positive/neutral/negative).
-
-### Step 2 — Slack Channel Monitoring
-- Check configured Slack channels for trending discussions, recurring themes, and notable messages.
-- Identify: frequently discussed topics, unanswered questions, complaints or feature requests, praise or positive feedback.
-- Note message volume trends compared to typical activity.
-
-### Step 3 — Sentiment Analysis
-- Aggregate sentiment across all sources:
-  - **Positive**: praise, recommendations, success stories
-  - **Neutral**: informational mentions, documentation references
-  - **Negative**: complaints, bug reports, unfavorable comparisons
-- Calculate an overall sentiment score: mostly positive / mixed / mostly negative.
-
-### Step 4 — Compile & Deliver Digest
-Produce a structured digest with these sections:
-- **Headline Summary** (2-3 sentences: what's the overall picture today?)
-- **Top Mentions** (up to 5 most significant mentions with source, excerpt, sentiment, and URL)
-- **Trending Topics** (key themes across all channels)
-- **Sentiment Overview** (positive/neutral/negative breakdown with counts)
-- **Action Items** (negative mentions needing response, questions needing answers, opportunities to engage)
-
-### Step 5 — Post to Slack
-- Format the digest as a well-structured Slack message using Slack markdown (bold, bullet points, links).
-- Post to the configured Slack webhook URL.
-- Keep the Slack message concise (under 2000 characters). Link to full details where available.
-
-## Error Handling
-- If web search returns no results for a query, note "No mentions found" and continue.
-- If the Slack webhook fails (non-200 response), report the error but still produce the digest in your output.
-- If rate limits are hit on any service, stop that source and note it.
-- Never fail silently — always report what was scanned and any issues encountered.
-
-{{ADDITIONAL_INSTRUCTIONS}}`,
     sessionTarget: "isolated",
   },
+  // ─── 07. Social Media Scheduler ─────────────────
   {
-    id: "smart-home-ops",
-    name: "Smart Home Ops + Reminders",
-    description:
-      "Controls smart home devices, sets up automations, manages reminders, and responds to events.",
+    id: "social-scheduler",
+    name: "Social Media Scheduler",
+    description: "Finds trending content in your niche, repurposes it, and schedules posts across platforms.",
+    icon: "Share2",
+    accentColor: "hud-error",
+    category: "Content & Social",
+    complexity: "hard",
+    requiredSkills: ["web-search"],
+    credentialFields: [
+      { envVar: "TWITTER_API_KEY", label: "Twitter/X API Key", placeholder: "Enter your Twitter API key" },
+      { envVar: "LINKEDIN_API_KEY", label: "LinkedIn API Key", placeholder: "Enter your LinkedIn API key" },
+    ],
+    defaultSchedule: { kind: "cron", expr: "0 9 * * 1,3,5" },
+    schedulePresets: [
+      { label: "Mon/Wed/Fri 9 AM", value: { kind: "cron", expr: "0 9 * * 1,3,5" } },
+      { label: "Daily 10 AM", value: { kind: "cron", expr: "0 10 * * *" } },
+      { label: "Weekdays 8 AM", value: { kind: "cron", expr: "0 8 * * 1-5" } },
+    ],
+    sessionTarget: "isolated",
+  },
+  // ─── 08. Smart File Organizer ───────────────────
+  {
+    id: "file-organizer",
+    name: "Smart File Organizer",
+    description: "Analyzes your Downloads and Desktop folders, then organizes files by type and project.",
+    icon: "FolderSync",
+    accentColor: "hud-success",
+    category: "Digital Organization",
+    complexity: "medium",
+    requiredSkills: [],
+    credentialFields: [],
+    defaultSchedule: { kind: "cron", expr: "0 22 * * 5" },
+    schedulePresets: [
+      { label: "Friday 10 PM", value: { kind: "cron", expr: "0 22 * * 5" } },
+      { label: "Daily Midnight", value: { kind: "cron", expr: "0 0 * * *" } },
+      { label: "Sunday 8 PM", value: { kind: "cron", expr: "0 20 * * 0" } },
+    ],
+    sessionTarget: "main",
+  },
+  // ─── 09. Smart Home Automator ───────────────────
+  {
+    id: "smart-home",
+    name: "Smart Home Automator",
+    description: "Creates and manages Home Assistant routines, monitors device status, and handles alerts.",
     icon: "Home",
-    accentColor: "hud-accent",
-    category: "IoT",
+    accentColor: "hud-amber",
+    category: "Smart Home",
+    complexity: "hard",
     requiredSkills: ["home-assistant"],
     credentialFields: [
-      {
-        envVar: "HOME_ASSISTANT_TOKEN",
-        label: "Home Assistant Long-Lived Access Token",
-        placeholder: "eyJ...",
-      },
-      {
-        envVar: "HOME_ASSISTANT_URL",
-        label: "Home Assistant URL",
-        placeholder: "http://homeassistant.local:8123",
-      },
+      { envVar: "HOME_ASSISTANT_TOKEN", label: "Home Assistant Token", placeholder: "Enter your long-lived access token" },
+      { envVar: "HOME_ASSISTANT_URL", label: "Home Assistant URL", placeholder: "http://homeassistant.local:8123" },
     ],
-    defaultSchedule: { kind: "every", intervalMs: 300000 },
+    defaultSchedule: { kind: "every", intervalMs: 3600000 },
     schedulePresets: [
-      {
-        label: "Every 5 min (event polling)",
-        value: { kind: "every", intervalMs: 300000 },
-      },
-      {
-        label: "Every 15 min",
-        value: { kind: "every", intervalMs: 900000 },
-      },
-      {
-        label: "Morning + evening routine",
-        value: { kind: "cron", expr: "0 7,22 * * *" },
-      },
-      { label: "Custom cron", value: { kind: "cron", expr: "" } },
+      { label: "Every 30 min", value: { kind: "every", intervalMs: 1800000 } },
+      { label: "Every hour", value: { kind: "every", intervalMs: 3600000 } },
+      { label: "Every 4 hours", value: { kind: "every", intervalMs: 14400000 } },
     ],
-    promptTemplate: `You are a Smart Home Operations Agent. Your job is to monitor, manage, and report on smart home devices, execute automations, and handle reminders.
-
-## Authentication & Tools
-You have the "home-assistant" skill installed.
-- Use the HOME_ASSISTANT_TOKEN environment variable for API authentication and HOME_ASSISTANT_URL for the Home Assistant server address (both already configured at ~/.openclaw/.env). Do NOT ask the user for credentials.
-
-## Instructions
-
-### Step 1 — Device Status Check
-- Query Home Assistant for the current state of all devices (lights, switches, sensors, locks, thermostats, cameras, media players).
-- Identify anomalies:
-  - Devices that are offline or unavailable
-  - Sensors reporting out-of-range values (e.g., temperature > 35C / 95F indoors, humidity > 80%)
-  - Doors or windows reported as open that shouldn't be (especially at night or when nobody is home)
-  - Devices that have been on for an unusually long time
-  - Battery-powered devices with low battery (< 20%)
-
-### Step 2 — Process Reminders
-- Check for any pending reminders or timed notifications configured in Home Assistant.
-- For due reminders: trigger the notification (via Home Assistant notification service).
-- For upcoming reminders (next 1 hour): note them in the report.
-
-### Step 3 — Execute Scheduled Automations
-- Check for automations that are due based on the current time and conditions:
-  - Lighting scenes (morning wake-up, evening dim, bedtime off)
-  - Thermostat adjustments (comfort vs. eco mode based on occupancy and time)
-  - Lock management (auto-lock doors at night, unlock in the morning)
-  - Any custom automations defined in Home Assistant
-- Execute due automations via the appropriate Home Assistant service calls.
-- Log each automation executed with timestamp and result.
-
-### Step 4 — Energy & Health Report
-Produce a structured report:
-- **Device Summary**: total devices, online count, offline count
-- **Anomalies Found**: list with device name, issue, and recommended action
-- **Automations Executed**: list with automation name, time, and result (success/failed)
-- **Reminders**: processed and upcoming
-- **Energy**: current power consumption if available, notable high-usage devices
-- **Recommendations**: suggested actions (e.g., "Living room light has been on for 8 hours — consider turning off")
-
-## Error Handling
-- If Home Assistant is unreachable, report the connection error immediately. Do NOT retry indefinitely.
-- If a specific device query fails, skip it, note the error, and continue with other devices.
-- If an automation execution fails, log the failure with the error message and continue.
-- Never fail silently — always include a complete status in the report, including any errors.
-
-{{ADDITIONAL_INSTRUCTIONS}}`,
+    sessionTarget: "isolated",
+  },
+  // ─── 10. Travel Planner ─────────────────────────
+  {
+    id: "travel-planner",
+    name: "Travel Planner",
+    description: "Researches destinations, builds itineraries, tracks prices, and organizes travel documents.",
+    icon: "Plane",
+    accentColor: "hud-amber",
+    category: "Travel & Logistics",
+    complexity: "medium",
+    requiredSkills: ["gmail", "web-search"],
+    credentialFields: [
+      { envVar: "SERPAPI_KEY", label: "SerpAPI Key (for flight search)", placeholder: "Enter your SerpAPI key" },
+    ],
+    oauthProviders: ["google"],
+    defaultSchedule: { kind: "cron", expr: "0 9 * * 1" },
+    schedulePresets: [
+      { label: "Monday 9 AM", value: { kind: "cron", expr: "0 9 * * 1" } },
+      { label: "Daily 8 AM", value: { kind: "cron", expr: "0 8 * * *" } },
+      { label: "Wed/Sat 10 AM", value: { kind: "cron", expr: "0 10 * * 3,6" } },
+    ],
+    sessionTarget: "isolated",
+  },
+  // ─── 11. Meeting Notes & Actions ────────────────
+  {
+    id: "meeting-notes",
+    name: "Meeting Notes & Actions",
+    description: "Summarizes meeting transcripts, extracts action items, and syncs to Notion and Slack.",
+    icon: "FileText",
+    accentColor: "hud-accent",
+    category: "Work Productivity",
+    complexity: "medium",
+    requiredSkills: ["notion", "slack"],
+    credentialFields: [
+      { envVar: "NOTION_API_KEY", label: "Notion API Key", placeholder: "secret_..." },
+      { envVar: "SLACK_WEBHOOK_URL", label: "Slack Webhook URL", placeholder: "https://hooks.slack.com/services/..." },
+      { envVar: "ZOOM_API_KEY", label: "Zoom API Key (optional)", placeholder: "Enter your Zoom API key" },
+    ],
+    defaultSchedule: { kind: "cron", expr: "0 18 * * 1-5" },
+    schedulePresets: [
+      { label: "5 PM Weekdays", value: { kind: "cron", expr: "0 17 * * 1-5" } },
+      { label: "6 PM Weekdays", value: { kind: "cron", expr: "0 18 * * 1-5" } },
+      { label: "Every 2 hours", value: { kind: "every", intervalMs: 7200000 } },
+    ],
+    sessionTarget: "isolated",
+  },
+  // ─── 12. Security & Privacy Auditor ─────────────
+  {
+    id: "security-auditor",
+    name: "Security & Privacy Auditor",
+    description: "Checks for data breaches, password reuse, and privacy exposure on a regular schedule.",
+    icon: "ShieldCheck",
+    accentColor: "hud-success",
+    category: "Security & Privacy",
+    complexity: "medium",
+    requiredSkills: [],
+    credentialFields: [
+      { envVar: "HIBP_API_KEY", label: "Have I Been Pwned API Key", placeholder: "Enter your HIBP API key" },
+    ],
+    defaultSchedule: { kind: "cron", expr: "0 10 * * 1" },
+    schedulePresets: [
+      { label: "Weekly Monday", value: { kind: "cron", expr: "0 10 * * 1" } },
+      { label: "Daily 9 AM", value: { kind: "cron", expr: "0 9 * * *" } },
+      { label: "Monthly 1st", value: { kind: "cron", expr: "0 10 1 * *" } },
+    ],
+    sessionTarget: "isolated",
+  },
+  // ─── 13. Fitness & Habit Tracker ────────────────
+  {
+    id: "fitness-tracker",
+    name: "Fitness & Habit Tracker",
+    description: "Tracks daily habits, logs workouts, and generates weekly progress reports.",
+    icon: "Activity",
+    accentColor: "hud-error",
+    category: "Health & Wellness",
+    complexity: "easy",
+    requiredSkills: [],
+    credentialFields: [
+      { envVar: "STRAVA_API_KEY", label: "Strava API Key (optional)", placeholder: "Enter your Strava API key" },
+    ],
+    defaultSchedule: { kind: "cron", expr: "0 21 * * *" },
+    schedulePresets: [
+      { label: "9 PM Daily", value: { kind: "cron", expr: "0 21 * * *" } },
+      { label: "10 PM Daily", value: { kind: "cron", expr: "0 22 * * *" } },
+      { label: "Sunday 8 PM", value: { kind: "cron", expr: "0 20 * * 0" } },
+    ],
+    sessionTarget: "isolated",
+  },
+  // ─── 14. News & Research Digest ─────────────────
+  {
+    id: "news-digest",
+    name: "News & Research Digest",
+    description: "Curates personalized news from multiple sources and delivers a formatted digest.",
+    icon: "Newspaper",
+    accentColor: "hud-accent",
+    category: "Information Management",
+    complexity: "easy",
+    requiredSkills: ["web-search"],
+    credentialFields: [
+      { envVar: "NEWS_API_KEY", label: "News API Key (optional)", placeholder: "Enter your NewsAPI key" },
+    ],
+    defaultSchedule: { kind: "cron", expr: "0 8 * * *" },
+    schedulePresets: [
+      { label: "8 AM Daily", value: { kind: "cron", expr: "0 8 * * *" } },
+      { label: "7 AM / 5 PM", value: { kind: "cron", expr: "0 7,17 * * *" } },
+      { label: "Monday Morning", value: { kind: "cron", expr: "0 8 * * 1" } },
+    ],
+    sessionTarget: "isolated",
+  },
+  // ─── 15. Photo Organizer ────────────────────────
+  {
+    id: "photo-organizer",
+    name: "Photo Organizer",
+    description: "Sorts and tags photos in Google Drive by date, location, and content.",
+    icon: "Image",
+    accentColor: "hud-success",
+    category: "Digital Organization",
+    complexity: "medium",
+    requiredSkills: ["google-drive"],
+    credentialFields: [],
+    oauthProviders: ["google"],
+    defaultSchedule: { kind: "cron", expr: "0 2 * * 0" },
+    schedulePresets: [
+      { label: "Sunday 2 AM", value: { kind: "cron", expr: "0 2 * * 0" } },
+      { label: "Daily Midnight", value: { kind: "cron", expr: "0 0 * * *" } },
+      { label: "Monthly 1st", value: { kind: "cron", expr: "0 2 1 * *" } },
+    ],
+    sessionTarget: "isolated",
+  },
+  // ─── 16. Invoice & Expense Reporter ─────────────
+  {
+    id: "invoice-generator",
+    name: "Invoice & Expense Reporter",
+    description: "Generates invoices from templates and compiles monthly expense reports.",
+    icon: "FileSpreadsheet",
+    accentColor: "hud-amber",
+    category: "Personal Finance",
+    complexity: "hard",
+    requiredSkills: ["gmail", "google-drive"],
+    credentialFields: [],
+    oauthProviders: ["google"],
+    defaultSchedule: { kind: "cron", expr: "0 9 1 * *" },
+    schedulePresets: [
+      { label: "1st of Month", value: { kind: "cron", expr: "0 9 1 * *" } },
+      { label: "15th of Month", value: { kind: "cron", expr: "0 9 15 * *" } },
+      { label: "Every Friday", value: { kind: "cron", expr: "0 9 * * 5" } },
+    ],
+    sessionTarget: "isolated",
+  },
+  // ─── 17. Smart Bookmark Manager ─────────────────
+  {
+    id: "bookmark-manager",
+    name: "Smart Bookmark Manager",
+    description: "Organizes bookmarks, checks for dead links, and suggests related content.",
+    icon: "Bookmark",
+    accentColor: "hud-accent",
+    category: "Information Management",
+    complexity: "easy",
+    requiredSkills: ["web-search"],
+    credentialFields: [
+      { envVar: "LINKDING_URL", label: "Linkding Server URL (optional)", placeholder: "https://your-linkding-instance.com" },
+      { envVar: "LINKDING_API_KEY", label: "Linkding API Key (optional)", placeholder: "Enter your Linkding API key" },
+    ],
+    defaultSchedule: { kind: "cron", expr: "0 3 * * 0" },
+    schedulePresets: [
+      { label: "Sunday 3 AM", value: { kind: "cron", expr: "0 3 * * 0" } },
+      { label: "Daily 2 AM", value: { kind: "cron", expr: "0 2 * * *" } },
+      { label: "Monthly 1st", value: { kind: "cron", expr: "0 3 1 * *" } },
+    ],
+    sessionTarget: "isolated",
+  },
+  // ─── 18. Pet & Plant Care Scheduler ─────────────
+  {
+    id: "pet-plant-care",
+    name: "Pet & Plant Care Scheduler",
+    description: "Tracks feeding schedules, vet appointments, watering reminders, and seasonal care.",
+    icon: "Leaf",
+    accentColor: "hud-amber",
+    category: "Home & Lifestyle",
+    complexity: "easy",
+    requiredSkills: ["google-calendar"],
+    credentialFields: [
+      { envVar: "OPENWEATHERMAP_KEY", label: "OpenWeatherMap Key (for plant care)", placeholder: "Enter your API key" },
+    ],
+    oauthProviders: ["google"],
+    defaultSchedule: { kind: "cron", expr: "0 8 * * *" },
+    schedulePresets: [
+      { label: "8 AM Daily", value: { kind: "cron", expr: "0 8 * * *" } },
+      { label: "7 AM / 6 PM", value: { kind: "cron", expr: "0 7,18 * * *" } },
+      { label: "Every 6 hours", value: { kind: "every", intervalMs: 21600000 } },
+    ],
+    sessionTarget: "isolated",
+  },
+  // ─── 19. Price Monitor & Deal Finder ────────────
+  {
+    id: "price-monitor",
+    name: "Price Monitor & Deal Finder",
+    description: "Tracks product prices across stores and alerts you when prices drop.",
+    icon: "TrendingDown",
+    accentColor: "hud-error",
+    category: "Shopping & Deals",
+    complexity: "medium",
+    requiredSkills: ["web-search"],
+    credentialFields: [],
+    defaultSchedule: { kind: "every", intervalMs: 21600000 },
+    schedulePresets: [
+      { label: "Every 4 hours", value: { kind: "every", intervalMs: 14400000 } },
+      { label: "Every 6 hours", value: { kind: "every", intervalMs: 21600000 } },
+      { label: "Every 12 hours", value: { kind: "every", intervalMs: 43200000 } },
+    ],
+    sessionTarget: "isolated",
+  },
+  // ─── 20. Weekly Review & Planning ───────────────
+  {
+    id: "weekly-review",
+    name: "Weekly Review & Planning",
+    description: "Compiles a comprehensive weekly review with highlights, metrics, and plans for next week.",
+    icon: "ClipboardList",
+    accentColor: "hud-accent",
+    category: "Daily Productivity",
+    complexity: "medium",
+    requiredSkills: ["google-calendar", "gmail", "notion"],
+    credentialFields: [
+      { envVar: "NOTION_API_KEY", label: "Notion API Key", placeholder: "secret_..." },
+    ],
+    oauthProviders: ["google"],
+    defaultSchedule: { kind: "cron", expr: "0 18 * * 5" },
+    schedulePresets: [
+      { label: "Friday 6 PM", value: { kind: "cron", expr: "0 18 * * 5" } },
+      { label: "Sunday 7 PM", value: { kind: "cron", expr: "0 19 * * 0" } },
+      { label: "Saturday 10 AM", value: { kind: "cron", expr: "0 10 * * 6" } },
+    ],
     sessionTarget: "isolated",
   },
 ];
@@ -442,6 +485,18 @@ Produce a structured report:
 
 export function getTemplate(id: string): WorkflowTemplate | undefined {
   return WORKFLOW_TEMPLATES.find((t) => t.id === id);
+}
+
+/** All unique categories from the template list */
+export function getCategories(): string[] {
+  const cats = new Set(WORKFLOW_TEMPLATES.map((t) => t.category));
+  return Array.from(cats);
+}
+
+/** Filter templates by category (pass undefined or "All" for no filter) */
+export function getTemplatesByCategory(category?: string): WorkflowTemplate[] {
+  if (!category || category === "All") return WORKFLOW_TEMPLATES;
+  return WORKFLOW_TEMPLATES.filter((t) => t.category === category);
 }
 
 /** Human-readable schedule description */
@@ -470,7 +525,7 @@ export function describeCronExpr(expr: string): string {
 
   const [min, hour, dom, , dow] = parts;
 
-  // "0 7 * * *" → "Daily at 7:00 AM"
+  // "0 7 * * *" -> "Daily at 7:00 AM"
   if (dom === "*" && dow === "*" && !hour.includes(",") && !hour.includes("/")) {
     const h = parseInt(hour, 10);
     const m = parseInt(min, 10);
@@ -480,7 +535,7 @@ export function describeCronExpr(expr: string): string {
     return `Daily at ${h12}${mStr} ${ampm}`;
   }
 
-  // "0 7,14 * * *" → "Daily at 7:00 AM, 2:00 PM"
+  // "0 7,14 * * *" -> "Daily at 7 AM, 2 PM"
   if (dom === "*" && dow === "*" && hour.includes(",")) {
     const hours = hour.split(",").map((h) => {
       const n = parseInt(h, 10);
@@ -491,7 +546,7 @@ export function describeCronExpr(expr: string): string {
     return `Daily at ${hours.join(", ")}`;
   }
 
-  // "0 9,17 * * 1-5" → "Weekdays at 9 AM, 5 PM"
+  // "0 9,17 * * 1-5" -> "Weekdays at 9 AM, 5 PM"
   if (dom === "*" && dow === "1-5" && hour.includes(",")) {
     const hours = hour.split(",").map((h) => {
       const n = parseInt(h, 10);
@@ -502,18 +557,46 @@ export function describeCronExpr(expr: string): string {
     return `Weekdays at ${hours.join(", ")}`;
   }
 
-  // "0 8-18/2 * * 1-5" → "Weekdays every 2h (8 AM - 6 PM)"
+  // "0 7 * * 1-5" -> "Weekdays at 7 AM"
+  if (dom === "*" && dow === "1-5" && !hour.includes(",") && !hour.includes("/")) {
+    const h = parseInt(hour, 10);
+    const ampm = h >= 12 ? "PM" : "AM";
+    const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+    return `Weekdays at ${h12} ${ampm}`;
+  }
+
+  // "0 8-18/2 * * 1-5" -> "Weekdays every 2h (work hours)"
   if (dom === "*" && dow === "1-5" && hour.includes("/")) {
     return `Weekdays ${hour}`;
   }
 
-  // "0 20 * * 0" → "Weekly on Sunday at 8 PM"
+  // "0 9 * * 1,3,5" -> "Mon/Wed/Fri at 9 AM"
+  if (dom === "*" && dow.includes(",")) {
+    const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const days = dow.split(",").map((d) => dayNames[parseInt(d, 10)] || d);
+    const h = parseInt(hour, 10);
+    const ampm = h >= 12 ? "PM" : "AM";
+    const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+    return `${days.join("/")} at ${h12} ${ampm}`;
+  }
+
+  // "0 20 * * 0" -> "Weekly on Sunday at 8 PM"
   if (dom === "*" && /^\d$/.test(dow)) {
     const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
     const h = parseInt(hour, 10);
     const ampm = h >= 12 ? "PM" : "AM";
     const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
     return `Weekly on ${days[parseInt(dow, 10)]} at ${h12} ${ampm}`;
+  }
+
+  // "0 9 1 * *" -> "Monthly on 1st at 9 AM"
+  if (dom !== "*" && dow === "*" && !dom.includes(",")) {
+    const h = parseInt(hour, 10);
+    const ampm = h >= 12 ? "PM" : "AM";
+    const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+    const d = parseInt(dom, 10);
+    const suffix = d === 1 ? "st" : d === 2 ? "nd" : d === 3 ? "rd" : "th";
+    return `Monthly on ${d}${suffix} at ${h12} ${ampm}`;
   }
 
   return expr;
