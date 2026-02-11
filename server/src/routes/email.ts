@@ -518,7 +518,7 @@ async function agentExec(prompt: string, timeoutMs = 60000): Promise<any> {
     {
       sessionKey,
       message: prompt,
-      deliver: "full",
+      deliver: true,
       thinking: "low",
       idempotencyKey: `tagging-${Date.now()}-${randomUUID().slice(0, 8)}`,
     },

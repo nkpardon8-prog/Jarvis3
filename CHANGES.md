@@ -4,6 +4,28 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-10 — Fix workflow backend: deliver param, missing credential field, cleanup
+
+**Author:** Nick (via Claude Code)
+**Commit:** fix: workflow agentExec deliver param, bookmark-manager LINKDING_URL, remove stale comments
+**Branch:** np/workflow-20-templates
+
+**What changed:**
+- **Critical: `deliver: "full"` → `deliver: true`** in `workflows.ts` and `email.ts` agentExec functions. The gateway protocol requires a boolean, not a string. The old value caused all agentExec calls (credential storage, custom skill deployment, workflow analysis, email tagging) to fail with "invalid chat.send params: at /deliver: must be boolean".
+- **Added `LINKDING_URL` credential field** to bookmark-manager template in both server `templates.ts` and client `workflowTemplates.ts`. The prompt template referenced this env var but it wasn't declared in `credentialFields`, so users couldn't enter the Linkding server URL through the UI.
+- **Removed stale comments** from `workflows.ts` (old "5 templates replaced" note).
+
+**Why:**
+- Comprehensive audit of all 20 workflow templates revealed the `deliver` param was inconsistent with other route files (connections.ts, integrations.ts, calendar.ts already used `true`). This bug would have caused every workflow activation to fail at the first agentExec call.
+
+**Files touched:**
+- `server/src/routes/workflows.ts` — MODIFIED: `deliver: "full"` → `deliver: true`, removed stale comments
+- `server/src/routes/email.ts` — MODIFIED: `deliver: "full"` → `deliver: true`
+- `server/src/routes/workflow-templates/templates.ts` — MODIFIED: added LINKDING_URL credential field to bookmark-manager
+- `client/components/workflows/workflowTemplates.ts` — MODIFIED: added LINKDING_URL credential field to bookmark-manager
+
+---
+
 ## 2026-02-10 — Rebuild Workflow System: 20 Everyday Automation Templates
 
 **Author:** Nick (via Claude Code)

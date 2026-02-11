@@ -13,11 +13,6 @@ import {
 const router = Router();
 router.use(authMiddleware);
 
-// ─── Template definitions imported from ./workflow-templates ───
-
-// Old 5 templates replaced with 20 everyday automation templates.
-// See server/src/routes/workflow-templates/templates.ts for definitions.
-
 // ─── Helpers ────────────────────────────────────────────
 
 /** Serialize a Prisma Workflow row into the API response shape */
@@ -56,7 +51,7 @@ async function agentExec(
     {
       sessionKey,
       message: prompt,
-      deliver: "full",
+      deliver: true,
       thinking: "low",
       idempotencyKey: `workflow-${Date.now()}-${randomUUID().slice(0, 8)}`,
     },

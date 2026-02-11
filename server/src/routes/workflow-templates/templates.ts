@@ -2039,6 +2039,11 @@ For invoices configured for email delivery, send each invoice to the client's em
     ],
     credentialFields: [
       {
+        envVar: "LINKDING_URL",
+        label: "Linkding Server URL (optional)",
+        placeholder: "https://your-linkding-instance.com",
+      },
+      {
         envVar: "LINKDING_API_KEY",
         label: "Linkding API Key (optional)",
         placeholder: "Enter your Linkding API key",

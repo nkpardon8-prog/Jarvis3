@@ -405,6 +405,7 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     complexity: "easy",
     requiredSkills: ["web-search"],
     credentialFields: [
+      { envVar: "LINKDING_URL", label: "Linkding Server URL (optional)", placeholder: "https://your-linkding-instance.com" },
       { envVar: "LINKDING_API_KEY", label: "Linkding API Key (optional)", placeholder: "Enter your Linkding API key" },
     ],
     defaultSchedule: { kind: "cron", expr: "0 3 * * 0" },
