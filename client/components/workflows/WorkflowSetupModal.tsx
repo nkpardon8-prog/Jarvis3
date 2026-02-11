@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import { api, type ProgressEvent } from "@/lib/api";
@@ -10,6 +10,8 @@ import { WorkflowTemplateCard } from "./WorkflowTemplateCard";
 import { SchedulePicker, type ScheduleOutput } from "./SchedulePicker";
 import {
   WORKFLOW_TEMPLATES,
+  getCategories,
+  getTemplatesByCategory,
   describeSchedule,
   type WorkflowTemplate,
 } from "./workflowTemplates";
@@ -25,6 +27,7 @@ import {
   Wand2,
   CheckCircle2,
   XCircle,
+  Search,
 } from "lucide-react";
 
 interface WorkflowSetupModalProps {
@@ -58,6 +61,37 @@ export function WorkflowSetupModal({
         : null
     );
 
+  // Category + search state
+  const [selectedCategory, setSelectedCategory] = useState("All");
+  const [searchQuery, setSearchQuery] = useState("");
+
+  const categories = useMemo(() => getCategories(), []);
+
+  const filteredTemplates = useMemo(() => {
+    let templates = getTemplatesByCategory(
+      selectedCategory === "All" ? undefined : selectedCategory
+    );
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      templates = templates.filter(
+        (t) =>
+          t.name.toLowerCase().includes(q) ||
+          t.description.toLowerCase().includes(q) ||
+          t.requiredSkills.some((s) => s.toLowerCase().includes(q))
+      );
+    }
+    return templates;
+  }, [selectedCategory, searchQuery]);
+
+  // Category counts
+  const categoryCounts = useMemo(() => {
+    const counts: Record<string, number> = { All: WORKFLOW_TEMPLATES.length };
+    for (const t of WORKFLOW_TEMPLATES) {
+      counts[t.category] = (counts[t.category] || 0) + 1;
+    }
+    return counts;
+  }, []);
+
   // Form state
   const [workflowName, setWorkflowName] = useState("");
   const [credentials, setCredentials] = useState<Record<string, string>>({});
@@ -84,7 +118,6 @@ export function WorkflowSetupModal({
       setWorkflowName(selectedTemplate.name);
       setCredentials({});
       setShowCredentials({});
-      // Initialize schedule from template default
       const ds = selectedTemplate.defaultSchedule;
       if (ds.kind === "every" && ds.intervalMs) {
         setSchedule({ kind: "every", intervalMs: ds.intervalMs });
@@ -96,37 +129,32 @@ export function WorkflowSetupModal({
     }
   }, [selectedTemplate?.id]);
 
-  // Build the schedule to send to the API
   function getScheduleForApi(): { kind: string; expr?: string; intervalMs?: number; tz?: string } {
     return schedule;
   }
 
-  // Validation
   function isValid(): boolean {
     if (!selectedTemplate) return false;
     if (!workflowName.trim()) return false;
-
-    // Check credentials
     for (const field of selectedTemplate.credentialFields) {
+      // Skip optional fields (label contains "optional")
+      if (field.label.toLowerCase().includes("optional")) continue;
       if (!credentials[field.envVar]?.trim()) return false;
     }
-
-    // Check schedule
     if (schedule.kind === "cron" && !schedule.expr) return false;
     if (schedule.kind === "every" && !schedule.intervalMs) return false;
-
     return true;
   }
 
-  // SSE step name → progress step index mapping
+  // SSE step name -> progress step index mapping
   const STEP_MAP: Record<string, number> = {
     skills: 0,
-    credentials: 1,
-    cron: 2,
-    verify: 3,
+    "custom-skills": 1,
+    credentials: 2,
+    cron: 3,
+    verify: 4,
   };
 
-  // Handle activation with SSE streaming progress
   async function handleActivate() {
     if (!selectedTemplate || !isValid()) return;
 
@@ -136,6 +164,7 @@ export function WorkflowSetupModal({
 
     const steps: ProgressStep[] = [
       { label: "Installing skills...", status: "pending" },
+      { label: "Deploying custom skills...", status: "pending" },
       { label: "Storing credentials...", status: "pending" },
       { label: "Creating scheduled job...", status: "pending" },
       { label: "Verifying workflow...", status: "pending" },
@@ -175,12 +204,10 @@ export function WorkflowSetupModal({
 
       if (!res.ok) throw new Error(res.error || "Failed to create workflow");
 
-      // Ensure all steps show done
       for (let i = 0; i < steps.length; i++) updateStep(i, "done");
       queryClient.invalidateQueries({ queryKey: ["workflows"] });
       setSetupDone(true);
     } catch (err: any) {
-      // Find first non-done step and mark as error
       setProgressSteps((prev) => {
         const firstPending = prev.findIndex((s) => s.status !== "done");
         return prev.map((s, i) =>
@@ -191,7 +218,6 @@ export function WorkflowSetupModal({
     }
   }
 
-  // Template selection handler
   function handleSelectTemplate(template: WorkflowTemplate) {
     setSelectedTemplate(template);
     setStep("configure");
@@ -213,7 +239,7 @@ export function WorkflowSetupModal({
           animate={{ scale: 1, opacity: 1 }}
           exit={{ scale: 0.95, opacity: 0 }}
           transition={{ duration: 0.2 }}
-          className="w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-hud-bg border border-hud-border rounded-2xl shadow-2xl"
+          className="w-full max-w-3xl max-h-[90vh] overflow-y-auto bg-hud-bg border border-hud-border rounded-2xl shadow-2xl"
         >
           {/* Header */}
           <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b border-hud-border bg-hud-bg/95 backdrop-blur-sm rounded-t-2xl">
@@ -248,17 +274,62 @@ export function WorkflowSetupModal({
           <div className="px-6 py-5">
             {/* ─── Step 1: Template Selection ─── */}
             {step === "select" && (
-              <div className="space-y-3">
-                <p className="text-sm text-hud-text-muted mb-4">
-                  Choose a pre-built workflow to get started, or build your own.
+              <div className="space-y-4">
+                <p className="text-sm text-hud-text-muted">
+                  Choose an automation to get started, or build your own.
                 </p>
-                {WORKFLOW_TEMPLATES.map((template) => (
-                  <WorkflowTemplateCard
-                    key={template.id}
-                    template={template}
-                    onClick={() => handleSelectTemplate(template)}
+
+                {/* Search bar */}
+                <div className="relative">
+                  <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-hud-text-muted" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search workflows..."
+                    className="w-full pl-9 pr-3 py-2 bg-hud-bg-secondary/50 border border-hud-border rounded-lg text-sm text-hud-text placeholder:text-hud-text-muted/40 focus:outline-none focus:border-hud-accent/50 transition-colors"
                   />
-                ))}
+                </div>
+
+                {/* Category tabs */}
+                <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-hide">
+                  {["All", ...categories].map((cat) => {
+                    const isActive = selectedCategory === cat;
+                    return (
+                      <button
+                        key={cat}
+                        onClick={() => setSelectedCategory(cat)}
+                        className={`flex items-center gap-1 px-3 py-1.5 text-[11px] font-medium rounded-full whitespace-nowrap transition-colors ${
+                          isActive
+                            ? "bg-hud-accent/20 text-hud-accent border border-hud-accent/30"
+                            : "bg-white/5 text-hud-text-muted border border-hud-border hover:bg-white/8 hover:text-hud-text-secondary"
+                        }`}
+                      >
+                        {cat}
+                        <span className={`text-[9px] ${isActive ? "text-hud-accent/70" : "text-hud-text-muted/50"}`}>
+                          {categoryCounts[cat] || 0}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Template grid — 2 columns */}
+                {filteredTemplates.length > 0 ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {filteredTemplates.map((template) => (
+                      <WorkflowTemplateCard
+                        key={template.id}
+                        template={template}
+                        onClick={() => handleSelectTemplate(template)}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-8 text-sm text-hud-text-muted">
+                    No workflows match your search.
+                  </div>
+                )}
 
                 {/* Build Custom divider + card */}
                 <div className="flex items-center gap-3 pt-2">
@@ -405,7 +476,7 @@ export function WorkflowSetupModal({
                   </div>
                 )}
 
-                {/* Schedule — visual calendar-style picker */}
+                {/* Schedule */}
                 <SchedulePicker
                   value={schedule}
                   onChange={setSchedule}
@@ -575,18 +646,27 @@ export function WorkflowSetupModal({
 // ─── Helpers ────────────────────────────────────────────
 
 function getInstructionsPlaceholder(templateId: string): string {
-  switch (templateId) {
-    case "github-triage":
-      return "e.g., Focus on repos: my-org/api, my-org/frontend. Prioritize security-related issues. Use labels: bug, feature, urgent.";
-    case "google-workspace-assistant":
-      return "e.g., Ignore newsletters and promotional emails. Prioritize emails from my team leads. Block off lunch time 12-1 PM.";
-    case "notion-curator":
-      return "e.g., Focus on the Engineering and Product databases. Tag all meeting notes with attendee names. Link related project pages.";
-    case "social-listening":
-      return "e.g., Monitor mentions of 'Acme Corp' and 'acme.io'. Focus on Twitter, Reddit, and Hacker News. Track competitor mentions too.";
-    case "smart-home-ops":
-      return "e.g., Turn off all lights at midnight. Set thermostat to 68F during work hours. Alert me if garage door is open after 10 PM.";
-    default:
-      return "Add any specific instructions for this workflow...";
-  }
+  const placeholders: Record<string, string> = {
+    "morning-briefing": "e.g., My city is San Francisco. Focus on tech news. Include calendar prep notes.",
+    "email-triage": "e.g., Emails from @company.com are always urgent. Ignore marketing@. Label client emails as VIP.",
+    "bill-tracker": "e.g., Track utilities, subscriptions, and one-time purchases. My budget categories are: Housing, Food, Transport, Entertainment.",
+    "calendar-assistant": "e.g., Block 12-1 PM for lunch. Don't schedule meetings before 9 AM. Flag meetings with no agenda.",
+    "meal-planner": "e.g., Vegetarian meals only. 30-min max prep time. Include at least 2 make-ahead lunches.",
+    "package-tracker": "e.g., I primarily order from Amazon and eBay. Alert me when packages are out for delivery.",
+    "social-scheduler": "e.g., Focus on AI and tech topics. Post 3x/week. Use professional tone on LinkedIn, casual on Twitter.",
+    "file-organizer": "e.g., Create folders by project name. Move screenshots to Screenshots/YYYY-MM. Archive files older than 6 months.",
+    "smart-home": "e.g., Turn off all lights at midnight. Set thermostat to 68F during work hours. Alert me if garage door is open after 10 PM.",
+    "travel-planner": "e.g., I prefer window seats. Budget is $2000 for flights. Check prices for Japan in March.",
+    "meeting-notes": "e.g., Always tag action items with owner names. Create a Notion page per meeting. Post to #team-updates on Slack.",
+    "security-auditor": "e.g., Check these emails: john@example.com, jane@example.com. Alert me about any new breaches.",
+    "fitness-tracker": "e.g., Track: exercise, meditation, reading, water intake. My workout days are Mon/Wed/Fri.",
+    "news-digest": "e.g., Topics: AI, startups, climate tech. Skip sports and entertainment. Include 1-2 international stories.",
+    "photo-organizer": "e.g., Organize by Year/Month/Event. Tag screenshots separately. Move duplicates to a 'Duplicates' folder.",
+    "invoice-generator": "e.g., My business name is Acme LLC. Invoice template: Net 30. Track expenses by project.",
+    "bookmark-manager": "e.g., Categories: Dev Tools, Reading List, Research, Recipes. Archive bookmarks older than 1 year.",
+    "pet-plant-care": "e.g., Dog: feed 2x daily, walk 3x. Indoor plants: water weekly. Outdoor plants: adjust for rain.",
+    "price-monitor": "e.g., Track: MacBook Pro 16, Sony WH-1000XM5, Dyson V15. Alert when price drops > 10%.",
+    "weekly-review": "e.g., Include time spent in meetings vs deep work. Track goals: ship feature X, read 2 chapters, exercise 3x.",
+  };
+  return placeholders[templateId] || "Add any specific instructions for this workflow...";
 }

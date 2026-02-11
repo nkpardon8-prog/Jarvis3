@@ -4,6 +4,43 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-10 — Rebuild Workflow System: 20 Everyday Automation Templates
+
+**Author:** Nick (via Claude Code)
+**Commit:** feat: rebuild workflow system with 20 everyday automation templates
+**Branch:** np/workflow-20-templates
+
+**What changed:**
+- **New `workflow-templates/` module** — Extracted and expanded workflow template system into 4 files: `types.ts` (shared interfaces with new `CustomSkillDef` and `complexity` fields), `templates.ts` (20 full template definitions with 80–120 line prompt templates each), `skills.ts` (23 custom SKILL.md content strings with YAML frontmatter), `index.ts` (barrel export + `getTemplateById`, `getCategories`, `getTemplatesByCategory` helpers).
+- **20 everyday automation templates** replacing the original 5 — Morning Briefing, Email Triage, Bill Tracker, Calendar Assistant, Meal Planner, Package Tracker, Social Scheduler, File Organizer, Smart Home, Travel Planner, Meeting Notes, Security Auditor, Fitness Tracker, News Digest, Photo Organizer, Invoice Generator, Bookmark Manager, Pet & Plant Care, Price Monitor, Weekly Review.
+- **Custom skill deployment step** — New SSE progress step "custom-skills" between skills install and credentials in `POST /workflows/`. Uses `agentExec()` to write SKILL.md files to `~/.openclaw/skills/<slug>/SKILL.md` for each template's custom skills.
+- **Optional credential skip** — Credential validation now skips fields with "optional" in the label, so templates can declare optional API keys without blocking activation.
+- **Refactored `workflows.ts`** — Removed all inline type definitions, 5 inline template definitions, and local `getTemplateById`. All imported from `./workflow-templates` module. Reduced from ~1393 to ~1058 lines.
+- **Shared icon registry** (`workflowIcons.ts`) — Centralized 20+ lucide-react icon imports with `getWorkflowIcon()` fallback to Puzzle. Replaces duplicate inline ICON_MAP in WorkflowCard and WorkflowTemplateCard.
+- **Shared color registry** (`workflowColors.ts`) — `COLOR_CLASSES` (bg/text/border per HUD token), `CATEGORY_COLOR_MAP` (13 categories → 4 HUD colors), `getColorClasses()` helper.
+- **Rewritten `workflowTemplates.ts`** — 20 client-side template definitions with complexity ratings, enhanced `describeSchedule()` with weekday/MWF/monthly patterns, `getCategories()` and `getTemplatesByCategory()` helpers.
+- **Category tabs + search in WorkflowSetupModal** — Horizontal scrollable category tab bar with counts, search input, 2-column grid layout, wider modal (max-w-3xl), 5 progress steps (skills → custom-skills → credentials → cron → verify), template-specific instruction placeholders.
+- **Complexity badge on WorkflowTemplateCard** — Easy (green), Medium (amber), Hard (red) badges. Uses shared icon/color registries.
+- **WorkflowCard uses shared registries** — Removed inline ICON_MAP and COLOR_MAP, imports from `workflowIcons.ts` and `workflowColors.ts`.
+
+**Why:**
+- The original 5 workflow templates were developer-focused (GitHub triage, Notion curator). The 20 new templates target everyday personal automation — morning briefings, email management, bill tracking, meal planning, fitness, home care — making workflows accessible to non-technical users. The extraction into a dedicated module improves maintainability and separates template content from routing logic.
+
+**Files touched:**
+- `server/src/routes/workflow-templates/types.ts` — NEW: shared interfaces (WorkflowTemplate, CustomSkillDef, etc.)
+- `server/src/routes/workflow-templates/templates.ts` — NEW: 20 template definitions (2489 lines)
+- `server/src/routes/workflow-templates/skills.ts` — NEW: 23 SKILL.md content strings (1152 lines)
+- `server/src/routes/workflow-templates/index.ts` — NEW: barrel export + helpers
+- `server/src/routes/workflows.ts` — MODIFIED: removed inline templates/types, added imports, added custom skill deploy step
+- `client/components/workflows/workflowIcons.ts` — NEW: centralized icon registry
+- `client/components/workflows/workflowColors.ts` — NEW: category color mapping
+- `client/components/workflows/workflowTemplates.ts` — REWRITTEN: 20 client templates + helpers
+- `client/components/workflows/WorkflowSetupModal.tsx` — MODIFIED: category tabs, search, 2-col grid, new progress steps
+- `client/components/workflows/WorkflowTemplateCard.tsx` — MODIFIED: shared registries, complexity badge
+- `client/components/workflows/WorkflowCard.tsx` — MODIFIED: shared registries
+
+---
+
 ## 2026-02-10 — Add "Your everyday AI" BYOK chat + Active research
 
 **Author:** Nick (via Codex)

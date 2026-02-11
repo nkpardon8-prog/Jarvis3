@@ -7,12 +7,9 @@ import { HudBadge } from "@/components/ui/HudBadge";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { api } from "@/lib/api";
 import { describeSchedule, getTemplate } from "./workflowTemplates";
+import { getWorkflowIcon } from "./workflowIcons";
+import { getColorClasses } from "./workflowColors";
 import {
-  GitPullRequest,
-  Briefcase,
-  BookOpen,
-  Radio,
-  Home,
   Puzzle,
   Play,
   Pause,
@@ -24,40 +21,6 @@ import {
   ChevronDown,
   ChevronRight,
 } from "lucide-react";
-
-const ICON_MAP: Record<
-  string,
-  React.ComponentType<{ size?: number; className?: string }>
-> = {
-  GitPullRequest,
-  Briefcase,
-  BookOpen,
-  Radio,
-  Home,
-};
-
-const COLOR_MAP: Record<string, { bg: string; text: string; border: string }> = {
-  "hud-accent": {
-    bg: "bg-hud-accent/15",
-    text: "text-hud-accent",
-    border: "border-hud-accent/30",
-  },
-  "hud-success": {
-    bg: "bg-hud-success/15",
-    text: "text-hud-success",
-    border: "border-hud-success/30",
-  },
-  "hud-amber": {
-    bg: "bg-hud-amber/15",
-    text: "text-hud-amber",
-    border: "border-hud-amber/30",
-  },
-  "hud-error": {
-    bg: "bg-hud-error/15",
-    text: "text-hud-error",
-    border: "border-hud-error/30",
-  },
-};
 
 interface WorkflowCardProps {
   workflow: any;
@@ -73,8 +36,8 @@ export function WorkflowCard({ workflow, onEdit }: WorkflowCardProps) {
   const accentColor =
     workflow.template?.accentColor || template?.accentColor || "hud-accent";
 
-  const Icon = ICON_MAP[icon] || Puzzle;
-  const colors = COLOR_MAP[accentColor] || COLOR_MAP["hud-accent"];
+  const Icon = getWorkflowIcon(icon);
+  const colors = getColorClasses(accentColor);
 
   const isActive = workflow.status === "active";
   const isPaused = workflow.status === "paused";
