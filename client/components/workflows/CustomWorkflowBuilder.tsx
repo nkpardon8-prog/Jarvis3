@@ -54,7 +54,7 @@ interface ProgressStep {
   status: "pending" | "active" | "done" | "error";
 }
 
-type Step = "describe" | "credentials" | "schedule" | "progress";
+type Step = "describe" | "credentials" | "schedule" | "review" | "progress";
 
 const CUSTOM_SCHEDULE_PRESETS: { label: string; value: ScheduleOutput }[] = [
   { label: "Every 15 min", value: { kind: "every", intervalMs: 900000 } },
@@ -215,6 +215,8 @@ export function CustomWorkflowBuilder({ onClose }: CustomWorkflowBuilderProps) {
     } else if (step === "credentials") {
       setStep("schedule");
     } else if (step === "schedule") {
+      setStep("review");
+    } else if (step === "review") {
       handleActivate();
     }
   }
@@ -222,6 +224,7 @@ export function CustomWorkflowBuilder({ onClose }: CustomWorkflowBuilderProps) {
   function goBack() {
     if (step === "credentials") setStep("describe");
     else if (step === "schedule") setStep("credentials");
+    else if (step === "review") setStep("schedule");
   }
 
   // SSE step name → progress step index mapping
@@ -311,10 +314,11 @@ export function CustomWorkflowBuilder({ onClose }: CustomWorkflowBuilderProps) {
     describe: "Describe Your Workflow",
     credentials: "API Connections",
     schedule: "Schedule",
+    review: "Review & Confirm",
     progress: "Setting Up...",
   };
 
-  const stepNumber = { describe: 1, credentials: 2, schedule: 3, progress: 4 };
+  const stepNumber = { describe: 1, credentials: 2, schedule: 3, review: 4, progress: 5 };
 
   return (
     <AnimatePresence>
@@ -324,7 +328,7 @@ export function CustomWorkflowBuilder({ onClose }: CustomWorkflowBuilderProps) {
         exit={{ opacity: 0 }}
         className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
         onClick={(e) => {
-          if (e.target === e.currentTarget && step !== "progress") onClose();
+          if (e.target === e.currentTarget && step !== "progress" && step !== "review") onClose();
         }}
       >
         <motion.div
@@ -337,7 +341,7 @@ export function CustomWorkflowBuilder({ onClose }: CustomWorkflowBuilderProps) {
           {/* Header */}
           <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b border-hud-border bg-hud-bg/95 backdrop-blur-sm rounded-t-2xl">
             <div className="flex items-center gap-3">
-              {step !== "describe" && step !== "progress" && (
+              {(step === "credentials" || step === "schedule" || step === "review") && (
                 <button
                   onClick={goBack}
                   className="p-1 rounded-lg text-hud-text-muted hover:text-hud-text hover:bg-white/5 transition-colors"
@@ -351,7 +355,7 @@ export function CustomWorkflowBuilder({ onClose }: CustomWorkflowBuilderProps) {
               </h2>
               {step !== "progress" && (
                 <span className="text-[10px] text-hud-text-muted bg-white/5 px-2 py-0.5 rounded-full">
-                  Step {stepNumber[step]}/3
+                  Step {stepNumber[step]}/4
                 </span>
               )}
             </div>
@@ -732,45 +736,134 @@ export function CustomWorkflowBuilder({ onClose }: CustomWorkflowBuilderProps) {
                   onTimezoneChange={setTimezone}
                 />
 
-                {/* Summary */}
-                <GlassPanel>
-                  <h4 className="text-[10px] text-hud-text-muted uppercase tracking-wider mb-2">
-                    Workflow Summary
-                  </h4>
-                  <div className="space-y-1.5 text-xs">
-                    <div className="flex items-center gap-2">
-                      <Wand2 size={11} className="text-hud-amber" />
-                      <span className="text-hud-text">{workflowName}</span>
-                    </div>
-                    <p className="text-[11px] text-hud-text-muted pl-5 line-clamp-2">
-                      {description}
-                    </p>
-                    {credentials.filter((c) => c.envVar).length > 0 && (
-                      <div className="flex items-center gap-2 pl-5">
-                        <Key size={10} className="text-hud-text-muted" />
-                        <span className="text-hud-text-muted">
-                          {credentials.filter((c) => c.envVar).length} credential
-                          {credentials.filter((c) => c.envVar).length !== 1
-                            ? "s"
-                            : ""}
-                        </span>
-                      </div>
-                    )}
-                    <div className="flex items-center gap-2 pl-5">
-                      <Clock size={10} className="text-hud-accent" />
-                      <span className="text-hud-accent">
-                        {describeSchedule(schedule)}
-                      </span>
-                    </div>
-                  </div>
-                </GlassPanel>
-
-                {/* Activate */}
+                {/* Next: Review */}
                 <div className="flex items-center justify-end pt-2">
                   <button
                     onClick={goNext}
                     disabled={!canProceedFrom("schedule")}
                     className="flex items-center gap-2 px-5 py-2 text-sm font-medium bg-hud-accent/20 text-hud-accent border border-hud-accent/30 rounded-lg hover:bg-hud-accent/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    Next: Review
+                    <ArrowRight size={14} />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* ─── Step 4: Review & Confirm ─── */}
+            {step === "review" && (
+              <div className="space-y-5">
+                <p className="text-xs text-hud-text-muted">
+                  Review your workflow configuration before activating. Once activated, the workflow will run on the schedule below.
+                </p>
+
+                {/* Summary card */}
+                <GlassPanel className="border-hud-accent/20">
+                  <div className="space-y-4">
+                    {/* Name & description */}
+                    <div>
+                      <h4 className="text-[10px] text-hud-text-muted uppercase tracking-wider mb-1">
+                        Workflow
+                      </h4>
+                      <div className="flex items-center gap-2 mb-1">
+                        <Wand2 size={13} className="text-hud-amber" />
+                        <span className="text-sm font-semibold text-hud-text">{workflowName}</span>
+                      </div>
+                      <p className="text-xs text-hud-text-muted pl-5">
+                        {description}
+                      </p>
+                    </div>
+
+                    {/* Credentials */}
+                    <div>
+                      <h4 className="text-[10px] text-hud-text-muted uppercase tracking-wider mb-1">
+                        Credentials
+                      </h4>
+                      {credentials.filter((c) => c.envVar).length > 0 ? (
+                        <div className="flex flex-wrap gap-1.5 pl-1">
+                          {credentials.filter((c) => c.envVar).map((cred) => (
+                            <span
+                              key={cred.id}
+                              className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded bg-hud-success/10 text-hud-success border border-hud-success/20"
+                            >
+                              <Key size={9} />
+                              {cred.envVar}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-hud-text-muted pl-1">None configured</p>
+                      )}
+                    </div>
+
+                    {/* Schedule */}
+                    <div>
+                      <h4 className="text-[10px] text-hud-text-muted uppercase tracking-wider mb-1">
+                        Schedule
+                      </h4>
+                      <div className="flex items-center gap-2 pl-1">
+                        <Clock size={12} className="text-hud-accent" />
+                        <span className="text-sm font-medium text-hud-accent">
+                          {describeSchedule(schedule)}
+                        </span>
+                      </div>
+                      {timezone && timezone !== "UTC" && (
+                        <p className="text-[10px] text-hud-text-muted pl-6 mt-0.5">
+                          Timezone: {timezone}
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Additional instructions */}
+                    {additionalInstructions && (
+                      <div>
+                        <h4 className="text-[10px] text-hud-text-muted uppercase tracking-wider mb-1">
+                          Additional Instructions
+                        </h4>
+                        <p className="text-xs text-hud-text-muted pl-1 line-clamp-3">
+                          {additionalInstructions}
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Custom trigger */}
+                    {customTrigger && (
+                      <div>
+                        <h4 className="text-[10px] text-hud-text-muted uppercase tracking-wider mb-1">
+                          Trigger Context
+                        </h4>
+                        <div className="flex items-center gap-2 pl-1">
+                          <Zap size={10} className="text-hud-amber" />
+                          <span className="text-xs text-hud-text-muted">{customTrigger}</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </GlassPanel>
+
+                {/* What will happen */}
+                <div className="px-3 py-2 rounded-lg bg-hud-accent/5 border border-hud-accent/15">
+                  <p className="text-[10px] text-hud-accent font-medium mb-1">What happens next:</p>
+                  <ol className="text-[10px] text-hud-text-muted space-y-0.5 list-decimal list-inside">
+                    <li>Your credentials will be stored securely in OpenClaw</li>
+                    <li>AI will analyze your description and generate an agent prompt</li>
+                    <li>Required skills will be installed automatically</li>
+                    <li>A recurring cron job will be created on your schedule</li>
+                  </ol>
+                </div>
+
+                {/* Activate */}
+                <div className="flex items-center justify-between pt-2">
+                  <button
+                    onClick={goBack}
+                    className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium text-hud-text-muted border border-hud-border rounded-lg hover:bg-white/5 transition-colors"
+                  >
+                    <ArrowLeft size={12} />
+                    Back to Schedule
+                  </button>
+                  <button
+                    onClick={goNext}
+                    className="flex items-center gap-2 px-5 py-2.5 text-sm font-semibold bg-hud-accent/20 text-hud-accent border border-hud-accent/30 rounded-lg hover:bg-hud-accent/30 transition-colors"
                   >
                     <Zap size={14} />
                     Build & Activate
@@ -825,20 +918,53 @@ export function CustomWorkflowBuilder({ onClose }: CustomWorkflowBuilderProps) {
 
                 {/* Success */}
                 {setupDone && (
-                  <GlassPanel className="border-hud-success/30">
-                    <div className="flex items-center gap-3 mb-3">
-                      <CheckCircle2 size={20} className="text-hud-success" />
-                      <h3 className="text-sm font-semibold text-hud-success">
-                        Workflow Created & Activated
-                      </h3>
-                    </div>
-                    <p className="text-xs text-hud-text-muted mb-3">
-                      <strong className="text-hud-text">{workflowName}</strong> is
-                      now running on schedule:{" "}
-                      <span className="text-hud-accent">
-                        {describeSchedule(schedule)}
-                      </span>
-                    </p>
+                  <GlassPanel className={resultData?.workflow?.status === "error" ? "border-hud-error/30" : "border-hud-success/30"}>
+                    {resultData?.workflow?.status === "error" ? (
+                      <>
+                        <div className="flex items-center gap-3 mb-3">
+                          <AlertCircle size={20} className="text-hud-error" />
+                          <h3 className="text-sm font-semibold text-hud-error">
+                            Workflow Created but Schedule Failed
+                          </h3>
+                        </div>
+                        <p className="text-xs text-hud-text-muted mb-3">
+                          <strong className="text-hud-text">{workflowName}</strong> was set up but the cron job could not be created. The workflow is saved and can be retried from the Workflows page.
+                        </p>
+                        {resultData.workflow.errorMessage && (
+                          <div className="mb-3 px-3 py-2 rounded-lg bg-hud-error/5 border border-hud-error/15">
+                            <p className="text-[10px] text-hud-error">{resultData.workflow.errorMessage}</p>
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <div className="flex items-center gap-3 mb-3">
+                          <CheckCircle2 size={20} className="text-hud-success" />
+                          <h3 className="text-sm font-semibold text-hud-success">
+                            Workflow Created & Activated
+                          </h3>
+                        </div>
+                        <p className="text-xs text-hud-text-muted mb-3">
+                          <strong className="text-hud-text">{workflowName}</strong> is
+                          now running on schedule:{" "}
+                          <span className="text-hud-accent">
+                            {describeSchedule(schedule)}
+                          </span>
+                        </p>
+                      </>
+                    )}
+
+                    {/* Prompt source warning */}
+                    {resultData?.promptSource === "fallback" && (
+                      <div className="mb-3 px-3 py-2 rounded-lg bg-hud-amber/5 border border-hud-amber/15">
+                        <p className="text-[10px] text-hud-amber font-medium mb-0.5">
+                          AI prompt generation unavailable
+                        </p>
+                        <p className="text-[10px] text-hud-text-muted">
+                          Using basic instructions. Consider adding more detail in Additional Instructions for better results.
+                        </p>
+                      </div>
+                    )}
 
                     {/* Show what was installed/created */}
                     {resultData?.skillsInstalled?.length > 0 && (

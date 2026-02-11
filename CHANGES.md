@@ -4,6 +4,37 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-11 — Harden custom workflow backend + improve builder UI
+
+**Author:** Nick (via Claude Code)
+**Commit:** feat: harden custom workflow activation, add review step, retry endpoint
+**Branch:** main
+
+**What changed:**
+
+**Backend hardening (workflows.ts):**
+- **Gateway pre-check** — Both pre-built and custom workflow activation now verify `gateway.isConnected` before creating a Prisma row. If disconnected, returns 503 immediately instead of creating an orphaned "setting-up" workflow.
+- **Cron failure = error status** — When `cron.add` fails, workflow is now saved with `status: "error"` and `errorMessage` instead of silently marking as "active" with no cron job. Applies to both pre-built and custom routes.
+- **Prompt source tracking** — Custom workflow analysis tracks `promptSource: "ai" | "fallback"` and includes it in the SSE result so the UI can warn when AI prompt generation failed.
+- **Orphan cleanup on startup** — `reRegisterWorkflowCrons()` now also finds any workflows stuck in `status: "setting-up"` for 5+ minutes and marks them as `status: "error"` with a retry message.
+- **New retry endpoint** — `POST /api/workflows/:id/retry` allows retrying failed workflows. Validates error state, checks gateway connection, re-registers the cron job with existing prompt and schedule, updates status to "active" on success.
+
+**UI improvements:**
+- **Review & Confirm step** — Added 4th step to CustomWorkflowBuilder between Schedule and Progress. Shows full summary: workflow name, description, credentials, schedule, additional instructions, trigger context, and a "what happens next" explainer.
+- **Progress error handling** — If the workflow is created but cron fails, shows distinct error panel ("Workflow Created but Schedule Failed") instead of generic error. Shows the specific error message.
+- **Prompt source warning** — If AI analysis fell back to basic prompt, shows amber warning in success panel.
+- **Retry button on WorkflowCard** — Error-state workflows now show a "Retry" button that calls the new retry endpoint. Shows success/error feedback.
+
+**Why:**
+- Custom workflows silently created "active" workflows without working cron jobs when `cron.add` failed. Server restarts left orphaned "setting-up" workflows. No way to retry a failed workflow except deleting and recreating. The user wanted the custom workflow builder to have the same reliability and quality as the pre-built template flow.
+
+**Files touched:**
+- `server/src/routes/workflows.ts` — MODIFIED: gateway pre-check, cron error status, promptSource tracking, orphan cleanup, retry endpoint
+- `client/components/workflows/CustomWorkflowBuilder.tsx` — MODIFIED: added review step, improved progress error handling, prompt source warning
+- `client/components/workflows/WorkflowCard.tsx` — MODIFIED: added retry mutation and retry button for error-state workflows
+
+---
+
 ## 2026-02-11 — Auto re-register workflow cron jobs on gateway connect/reconnect
 
 **Author:** Nick (via Claude Code)

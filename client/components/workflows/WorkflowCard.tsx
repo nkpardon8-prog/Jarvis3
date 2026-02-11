@@ -83,6 +83,20 @@ export function WorkflowCard({ workflow, onEdit }: WorkflowCardProps) {
     },
   });
 
+  // Retry (for error-state workflows)
+  const retryMutation = useMutation({
+    mutationFn: async () => {
+      const res = await api.post<any>(
+        `/workflows/${encodeURIComponent(workflow.id)}/retry`
+      );
+      if (!res.ok) throw new Error(res.error || "Failed to retry workflow");
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["workflows"] });
+    },
+  });
+
   const statusBadge = isActive
     ? { variant: "online" as const, label: "Active" }
     : isPaused
@@ -252,6 +266,24 @@ export function WorkflowCard({ workflow, onEdit }: WorkflowCardProps) {
           </button>
         )}
 
+        {/* Retry (for error-state workflows) */}
+        {isError && (
+          <button
+            onClick={() => retryMutation.mutate()}
+            disabled={retryMutation.isPending}
+            className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium bg-hud-accent/15 text-hud-accent border border-hud-accent/25 rounded-lg hover:bg-hud-accent/25 transition-colors disabled:opacity-50"
+          >
+            {retryMutation.isPending ? (
+              <LoadingSpinner size="sm" />
+            ) : (
+              <>
+                <RotateCw size={11} />
+                Retry
+              </>
+            )}
+          </button>
+        )}
+
         {/* Spacer */}
         <div className="flex-1" />
 
@@ -285,6 +317,16 @@ export function WorkflowCard({ workflow, onEdit }: WorkflowCardProps) {
       {runMutation.isError && (
         <p className="text-[10px] text-hud-error mt-2">
           {(runMutation.error as Error)?.message || "Failed to run workflow"}
+        </p>
+      )}
+      {retryMutation.isSuccess && (
+        <p className="text-[10px] text-hud-success mt-2">
+          Workflow reactivated successfully
+        </p>
+      )}
+      {retryMutation.isError && (
+        <p className="text-[10px] text-hud-error mt-2">
+          {(retryMutation.error as Error)?.message || "Retry failed"}
         </p>
       )}
     </GlassPanel>

@@ -238,6 +238,14 @@ router.post("/", async (req: AuthRequest, res: Response) => {
       return;
     }
 
+    // Gateway pre-check — fail fast if gateway is disconnected
+    if (!gateway.isConnected) {
+      const msg = "Gateway is disconnected — cannot create workflow. Check your gateway connection in Settings.";
+      if (wantStream) { sendProgress("validate", "error", msg); res.end(); }
+      else { res.status(503).json({ ok: false, error: msg }); }
+      return;
+    }
+
     // Check which creds are already stored (if any)
     for (const field of template.credentialFields) {
       if (field.label.toLowerCase().includes("optional")) continue;
@@ -326,6 +334,7 @@ router.post("/", async (req: AuthRequest, res: Response) => {
     // 4. Create cron job
     sendProgress("cron", "active");
     let cronJobId: string | undefined;
+    let cronError: string | undefined;
     const agentPrompt = assemblePrompt(template, additionalInstructions || "", customTrigger);
 
     if (hasCronMethods()) {
@@ -339,19 +348,29 @@ router.post("/", async (req: AuthRequest, res: Response) => {
         cronJobId = cronResult?.id || cronResult?.jobId;
       } catch (err: any) {
         console.error(`[Workflows] cron.add failed: ${err.message}`);
+        cronError = `Cron job creation failed: ${err.message}`;
       }
+    } else {
+      cronError = "Cron scheduling is not available — gateway may not support it";
     }
-    sendProgress("cron", "done");
 
-    // 5. Update to active
+    if (cronError) {
+      sendProgress("cron", "error", cronError);
+    } else {
+      sendProgress("cron", "done");
+    }
+
+    // 5. Update status — error if cron failed, active otherwise
     sendProgress("verify", "active");
+    const finalStatus = cronError ? "error" : "active";
     const updated = await prisma.workflow.update({
       where: { id: workflowId },
       data: {
-        status: "active",
+        status: finalStatus,
         cronJobId: cronJobId || null,
         installedSkills: JSON.stringify(installedSkills),
         storedCredentials: JSON.stringify(storedCreds),
+        errorMessage: cronError || null,
       },
     });
     sendProgress("verify", "done");
@@ -425,6 +444,14 @@ router.post("/custom", async (req: AuthRequest, res: Response) => {
     if (schedule.kind === "every" && !schedule.intervalMs) {
       if (wantStream) { sendProgress("validate", "error", "Interval is required"); res.end(); }
       else { res.status(400).json({ ok: false, error: "Interval is required" }); }
+      return;
+    }
+
+    // Gateway pre-check — fail fast if gateway is disconnected
+    if (!gateway.isConnected) {
+      const msg = "Gateway is disconnected — cannot create workflow. Check your gateway connection in Settings.";
+      if (wantStream) { sendProgress("validate", "error", msg); res.end(); }
+      else { res.status(503).json({ ok: false, error: msg }); }
       return;
     }
 
@@ -513,6 +540,7 @@ Rules:
 Respond ONLY with valid JSON, no markdown fences, no explanation.`;
 
     let analysis: any;
+    let promptSource: "ai" | "fallback" = "ai";
     try {
       const analysisResult = (await agentExec(analysisPrompt, 90000)) as any;
       const responseText =
@@ -529,6 +557,7 @@ Respond ONLY with valid JSON, no markdown fences, no explanation.`;
       }
     } catch (err: any) {
       console.error(`[Workflows] Agent analysis failed: ${err.message}, using fallback`);
+      promptSource = "fallback";
       analysis = {
         systemPrompt: `You are a custom automation agent. Your job is: ${description.trim()}
 
@@ -598,6 +627,7 @@ ${additionalInstructions ? `## Additional Instructions\n${additionalInstructions
     // 7. Create cron job
     sendProgress("cron", "active");
     let cronJobId: string | undefined;
+    let cronError: string | undefined;
     const systemPrompt = String(analysis.systemPrompt || "");
     let finalPrompt = systemPrompt.includes("{{ADDITIONAL_INSTRUCTIONS}}")
       ? systemPrompt.replace("{{ADDITIONAL_INSTRUCTIONS}}", additionalInstructions || "")
@@ -623,27 +653,35 @@ ${additionalInstructions ? `## Additional Instructions\n${additionalInstructions
         console.log(`[Workflows/Custom] cron.add SUCCESS: cronJobId=${cronJobId}`);
       } catch (err: any) {
         console.error(`[Workflows/Custom] cron.add failed: ${err.message}`);
-        // Don't block — continue to mark as active
+        cronError = `Cron job creation failed: ${err.message}`;
       }
     } else {
       console.log(`[Workflows/Custom] No cron methods available, skipping cron.add`);
+      cronError = "Cron scheduling is not available — gateway may not support it";
     }
-    sendProgress("cron", "done");
 
-    // 8. Update workflow to active status
+    if (cronError) {
+      sendProgress("cron", "error", cronError);
+    } else {
+      sendProgress("cron", "done");
+    }
+
+    // 8. Update workflow status — error if cron failed, active otherwise
     sendProgress("verify", "active");
     const suggestedConnections: string[] = Array.isArray(analysis.suggestedConnections)
       ? analysis.suggestedConnections
       : [];
 
+    const finalStatus = cronError ? "error" : "active";
     const updated = await prisma.workflow.update({
       where: { id: workflowId },
       data: {
-        status: "active",
+        status: finalStatus,
         cronJobId: cronJobId || null,
         installedSkills: JSON.stringify(installedSkills),
         storedCredentials: JSON.stringify(storedCreds),
         generatedPrompt: finalPrompt,
+        errorMessage: cronError || null,
       },
     });
     sendProgress("verify", "done");
@@ -653,6 +691,7 @@ ${additionalInstructions ? `## Additional Instructions\n${additionalInstructions
       data: {
         workflow: serializeWorkflow(updated),
         generatedPrompt: systemPrompt,
+        promptSource,
         suggestedConnections,
         skillsInstalled: installedSkills,
         skillsCreated: skillsToCreate.map((s: any) => s.slug).filter(Boolean),
@@ -1050,6 +1089,76 @@ router.get("/:id/history", async (req: AuthRequest, res: Response) => {
   }
 });
 
+// ─── POST /api/workflows/:id/retry — Retry a failed workflow ────
+
+router.post("/:id/retry", async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const workflowId = req.params.id as string;
+
+    const workflow = await prisma.workflow.findFirst({ where: { id: workflowId, userId } });
+    if (!workflow) {
+      res.status(404).json({ ok: false, error: "Workflow not found" });
+      return;
+    }
+
+    if (workflow.status !== "error") {
+      res.status(400).json({ ok: false, error: "Only failed workflows can be retried" });
+      return;
+    }
+
+    if (!gateway.isConnected) {
+      res.status(503).json({ ok: false, error: "Gateway is disconnected — cannot retry" });
+      return;
+    }
+
+    if (!hasCronMethods()) {
+      res.status(503).json({ ok: false, error: "Cron methods not available on gateway" });
+      return;
+    }
+
+    // Get the prompt — either from stored generatedPrompt or re-assemble from template
+    const agentPrompt = getWorkflowPrompt(workflow);
+    if (!agentPrompt) {
+      res.status(500).json({ ok: false, error: "No prompt available for this workflow — please delete and recreate" });
+      return;
+    }
+
+    const schedule = JSON.parse(workflow.schedule || "{}");
+    const template = getTemplateById(workflow.templateId);
+    const sessionTarget = template?.sessionTarget || "isolated";
+
+    // Try to register the cron job
+    try {
+      const cronResult = (await gateway.send("cron.add", {
+        name: workflow.cronJobName,
+        schedule: buildCronSchedule(schedule),
+        sessionTarget,
+        payload: { kind: "agentTurn", message: agentPrompt },
+      }, 15000)) as any;
+
+      const cronJobId = cronResult?.id || cronResult?.jobId;
+
+      const updated = await prisma.workflow.update({
+        where: { id: workflowId },
+        data: {
+          status: "active",
+          cronJobId: cronJobId || null,
+          errorMessage: null,
+        },
+      });
+
+      console.log(`[Workflows] Retry SUCCESS for "${workflow.name}" — cronJobId=${cronJobId}`);
+      res.json({ ok: true, data: { workflow: serializeWorkflow(updated) } });
+    } catch (err: any) {
+      console.error(`[Workflows] Retry cron.add failed for "${workflow.name}": ${err.message}`);
+      res.status(500).json({ ok: false, error: `Failed to create cron job: ${err.message}` });
+    }
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // ─── Cron Re-registration on Gateway Reconnect ─────────────
 
 /**
@@ -1058,6 +1167,26 @@ router.get("/:id/history", async (req: AuthRequest, res: Response) => {
  * does not persist cron jobs across restarts.
  */
 export async function reRegisterWorkflowCrons(): Promise<void> {
+  // Clean up orphaned "setting-up" workflows (crashed mid-activation)
+  const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
+  try {
+    const orphaned = await prisma.workflow.updateMany({
+      where: {
+        status: "setting-up",
+        createdAt: { lt: fiveMinAgo },
+      },
+      data: {
+        status: "error",
+        errorMessage: "Setup was interrupted — please retry or delete this workflow",
+      },
+    });
+    if (orphaned.count > 0) {
+      console.log(`[Workflows] Cleaned up ${orphaned.count} orphaned "setting-up" workflow(s)`);
+    }
+  } catch (err: any) {
+    console.warn(`[Workflows] Orphan cleanup failed: ${err.message}`);
+  }
+
   if (!hasCronMethods()) {
     console.log("[Workflows] No cron methods available — skipping re-registration");
     return;
