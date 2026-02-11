@@ -84,7 +84,7 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
   {
     id: "email-triage",
     name: "Email Triage",
-    description: "Automatically classifies, labels, and prioritizes your inbox every 30 minutes.",
+    description: "Classifies and labels your newest 100 emails by priority — runs every 30 minutes.",
     icon: "Mail",
     accentColor: "hud-success",
     category: "Email Management",

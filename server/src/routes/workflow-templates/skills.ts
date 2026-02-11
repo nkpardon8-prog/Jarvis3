@@ -81,30 +81,30 @@ Reads incoming emails and classifies them into user-defined categories using LLM
 
 ## Capabilities
 
-- Read unread emails (subject, sender, body snippet)
-- Classify into categories: urgent, action-required, newsletter, receipt, personal, promotional
-- Apply Gmail labels based on classification
-- Auto-archive emails below a configurable priority threshold
+- Read the newest emails from inbox (up to 100, regardless of read status)
+- Classify into categories: urgent, action-required, fyi, newsletter, promotional
+- Apply Gmail labels based on classification (prefixed with "Auto/")
+- Skip emails that already have an "Auto/" label from a previous run
 - Track classification history for improved accuracy
 
 ## Classification Rules
 
 - **Urgent**: From direct reports, executives, clients; contains "ASAP", "urgent", "deadline", "critical"
 - **Action Required**: Needs a response but not time-critical; questions, requests, invitations
+- **FYI**: Informational updates, status reports, CC'd threads, no action needed
 - **Newsletter**: Bulk mail, mailing lists, regular digests
-- **Receipt**: Purchase confirmations, invoices, shipping notifications
-- **Personal**: From known personal contacts, family
 - **Promotional**: Marketing, sales, offers, coupons
 
 ## Instructions
 
-1. Fetch unread emails since last run using Gmail proxy
-2. For each email, analyze sender, subject, and body snippet
-3. Classify into one of the defined categories
-4. Create Gmail labels if they don't exist (prefix with "Auto/")
-5. Apply the appropriate label to each email
-6. Auto-archive newsletters and promotional emails if user enabled this
-7. Report summary: count per category, any urgent items highlighted
+1. Fetch the newest 100 emails from inbox using Gmail proxy (do NOT filter by is:unread)
+2. Check each email's existing labels — skip any that already have an "Auto/" prefixed label
+3. For each unlabeled email, analyze sender, subject, and body snippet
+4. Classify into one of the defined categories
+5. Create Gmail labels if they don't exist (prefix with "Auto/")
+6. Apply the appropriate label to each email using batch modify requests
+7. Add a short delay between batch requests to avoid rate limiting
+8. Report summary: count per category, any urgent items highlighted, total skipped
 `,
 
   // ── 03. Bill Tracker ──────────────────────────────────

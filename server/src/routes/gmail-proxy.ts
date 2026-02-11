@@ -16,8 +16,8 @@ interface RateWindow {
 }
 
 const rateLimits = new Map<string, RateWindow>();
-const RATE_LIMIT_PER_MIN = 30;
-const RATE_LIMIT_PER_HOUR = 300;
+const RATE_LIMIT_PER_MIN = 120;
+const RATE_LIMIT_PER_HOUR = 1500;
 
 function checkRateLimit(userId: string): { allowed: boolean; retryAfterMs?: number } {
   const now = Date.now();

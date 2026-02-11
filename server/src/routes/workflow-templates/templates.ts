@@ -120,7 +120,7 @@ End with a "Have a great day!" closing and any reminders about upcoming deadline
     id: "email-triage",
     name: "Email Triage",
     description:
-      "Automatically classifies, labels, and prioritizes your inbox every 30 minutes",
+      "Classifies and labels your newest 100 emails by priority — runs every 30 minutes",
     icon: "Mail",
     accentColor: "hud-success",
     category: "Email Management",
@@ -143,22 +143,23 @@ End with a "Have a great day!" closing and any reminders about upcoming deadline
       { label: "Every hour", value: { kind: "every", intervalMs: 3600000 } },
     ],
     sessionTarget: "isolated",
-    promptTemplate: `You are an Email Triage Agent. Your job is to read unread emails from the user's Gmail inbox, classify each one into priority categories, apply Gmail labels, and produce a concise triage summary.
+    promptTemplate: `You are an Email Triage Agent. Your job is to read the user's newest emails from Gmail, classify each one into priority categories, apply Gmail labels, and produce a concise triage summary. You process ALL recent emails — not just unread ones.
 
 ## Authentication
 - Gmail: Use the jarvis-google proxy skill for all email operations
-  - GET /api/google-proxy/messages — List inbox messages (use query param: is:unread)
+  - GET /api/google-proxy/messages — List inbox messages (sorted newest-first by default, use maxResults=100)
   - GET /api/google-proxy/messages/:id — Read full message content
   - POST /api/google-proxy/messages/modify — Add/remove labels on messages
   - POST /api/google-proxy/labels — Create new labels if they don't exist
   - All requests require Bearer token from JARVIS_GOOGLE_PROXY_TOKEN in ~/.openclaw/.env
 
 ## Instructions
-### Step 1 — Fetch Unread Emails
-Use the Gmail proxy to fetch all unread emails from the inbox.
-Limit to the most recent 50 unread messages to avoid processing overload.
+### Step 1 — Fetch the Newest 100 Emails
+Use the Gmail proxy to fetch the newest 100 emails from the inbox (do NOT filter by is:unread — fetch ALL recent emails regardless of read status).
+Request: GET /api/google-proxy/messages?maxResults=100
 For each email, retrieve: messageId, sender (name and address), subject line, body snippet (first 200 chars), date received, and any existing labels.
-Skip emails already labeled with any "Auto/" prefixed label — they were triaged in a previous run.
+Check each email's existing labels. If an email already has ANY label starting with "Auto/" (e.g., "Auto/Urgent", "Auto/FYI"), skip it — it was already triaged in a previous run.
+Process all remaining emails that do NOT have an "Auto/" label, regardless of whether they are read or unread.
 
 ### Step 2 — Classify Each Email
 Analyze each email's sender, subject, and body snippet to assign ONE primary category:
@@ -180,13 +181,15 @@ For each classified email, use POST /api/google-proxy/messages/modify to add the
 Batch the modify requests: group emails by category and send one batch request per category (up to 50 message IDs per batch).
 Do NOT remove any existing user-applied labels — only ADD the auto-classification label.
 For Spam/Promotional emails: optionally add the "Auto/Promotional" label but never auto-delete or auto-archive.
+Add a short delay (1-2 seconds) between batch modify requests to avoid rate limiting.
 
 ### Step 5 — Generate Triage Summary
 Compile a summary report organized by category.
 For Urgent emails: list sender, subject, and a one-line reason why it was classified as urgent.
 For Action Required: list sender, subject, and what action seems needed.
 For other categories: just count (e.g., "12 newsletters, 8 promotional").
-Include total emails processed and breakdown by category with percentages.
+Include total emails processed (newly triaged) and skipped (already labeled) counts.
+Include breakdown by category with percentages.
 
 ### Step 6 — Handle Edge Cases
 If an email could belong to multiple categories, choose the highest-priority one (Urgent > Action Required > FYI > Newsletter > Spam).
@@ -196,7 +199,7 @@ Log any emails where confidence is "low" in a separate "Needs Review" section.
 
 ## Output Format
 - **Triage Summary for [Date/Time]**
-- Total processed: N emails
+- Total fetched: N emails | Newly triaged: N | Already labeled: N (skipped)
 - **Urgent (N)**: Bulleted list with sender, subject, reason
 - **Action Required (N)**: Bulleted list with sender, subject, action needed
 - **FYI (N)**: Count only (or top 3 if notable)
@@ -207,10 +210,11 @@ Log any emails where confidence is "low" in a separate "Needs Review" section.
 
 ## Error Handling
 - If Gmail proxy returns 401: Report "Gmail proxy authentication failed — check JARVIS_GOOGLE_PROXY_TOKEN"
+- If Gmail proxy returns 429: Wait 10 seconds and retry the request (up to 3 retries)
 - If Gmail proxy is unreachable: Report "Cannot connect to Gmail proxy — is the Jarvis server running?"
 - If label creation fails: Continue without labeling, but report which labels could not be created
-- If a batch modify fails: Retry once, then report the specific message IDs that failed
-- If inbox has 0 unread emails: Report "No unread emails to triage" and exit cleanly
+- If a batch modify fails: Retry once with a 5-second delay, then report the specific message IDs that failed
+- If inbox has 0 emails: Report "No emails to triage" and exit cleanly
 
 {{ADDITIONAL_INSTRUCTIONS}}`,
   },

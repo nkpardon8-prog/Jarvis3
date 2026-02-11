@@ -4,6 +4,29 @@ This file is a living record of every change made to the Jarvis codebase. Agents
 
 ---
 
+## 2026-02-11 — Email Triage: process newest 100 emails + increase rate limits
+
+**Author:** Nick (via Claude Code)
+**Commit:** fix: email triage processes newest 100 emails (not just unread), increase Gmail proxy rate limits
+**Branch:** main
+
+**What changed:**
+- **Email Triage prompt template rewritten** — Now fetches the newest 100 emails regardless of read status (was: only 50 unread emails). Skips already Auto/-labeled emails. Adds rate-limit-aware retry logic (429 handling with delays). Updated output format to show fetched/triaged/skipped counts.
+- **Gmail proxy rate limits increased** from 30 req/min → 120 req/min and 300 req/hr → 1500 req/hr. The old limits caused 429 errors during email triage when the agent made rapid sequential API calls (list + read each + labels + modify).
+- **Email Classifier skill updated** — Aligned with new prompt: processes newest emails (not just unread), includes batch delay instructions to avoid rate limiting.
+- **Client-side description updated** — Email Triage card now reads "Classifies and labels your newest 100 emails by priority".
+
+**Why:**
+- User ran the Email Triage workflow and it only processed 4 emails, skipping 46 already-labeled ones. The prompt was limited to unread emails only and capped at 50. User wanted it to process the newest 100 emails to ensure comprehensive inbox coverage. The internal Gmail proxy rate limiter was also too aggressive for automated workflows.
+
+**Files touched:**
+- `server/src/routes/workflow-templates/templates.ts` — MODIFIED: email-triage prompt rewritten for newest 100 emails
+- `server/src/routes/workflow-templates/skills.ts` — MODIFIED: email-classifier skill updated to match new behavior
+- `server/src/routes/gmail-proxy.ts` — MODIFIED: rate limits 30→120/min, 300→1500/hr
+- `client/components/workflows/workflowTemplates.ts` — MODIFIED: updated email-triage description
+
+---
+
 ## 2026-02-10 — Fix workflow backend: deliver param, missing credential field, cleanup
 
 **Author:** Nick (via Claude Code)
